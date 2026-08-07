@@ -1,18 +1,11 @@
 // pipup-notify-card.js
 // PiPup Notification Card for Home Assistant
-// AUTHOR: LTek
-// URL: https://github.com/Ltek/pipup-notify-card
-// 
-// !! IMPORTANT - READ !!
-// only works with these versions of PiPup and PiPup APK...
-// Integration... https://github.com/mhoogenbosch/ha-pipup
-// APK... https://github.com/mhoogenbosch/PiPup
-//
+
 // ============================================================================
 // BUILD NUMBER — update on every revision. Format: v<year>.<month>.<day>.<increment>
 // The increment is a monotonic version counter — it ALWAYS goes up, never resets
 // (even on a new day). Bump date to today AND increment by one each revision.
-const BUILD_NUMBER = 'v2026.08.06.44';
+const BUILD_NUMBER = 'v2026.08.06.45';
 // ============================================================================
 
 // Shared configuration definitions
@@ -1008,11 +1001,12 @@ class PipupNotifyCard extends HTMLElement {
       .pipup-title-icon {
         flex-shrink: 0;
       }
-      /* When the title icon doubles as the collapse affordance, rotate it. */
+      /* When the title icon doubles as the collapse affordance it is upright by
+         default (collapsed) and only rotates sideways while the card is expanded. */
       .pipup-title-icon.as-chevron {
         transition: transform 0.25s ease;
       }
-      .pipup-title-icon.as-chevron.collapsed {
+      .pipup-title-icon.as-chevron.expanded {
         transform: rotate(-90deg);
       }
       .pipup-title-text {
@@ -1032,7 +1026,7 @@ class PipupNotifyCard extends HTMLElement {
         --mdc-icon-size: var(--pipup-title-icon-size);
         flex-shrink: 0;
       }
-      .pipup-title-chevron.collapsed {
+      .pipup-title-chevron.expanded {
         transform: rotate(-90deg);
       }
       .pipup-body {
@@ -1452,12 +1446,15 @@ class PipupNotifyCard extends HTMLElement {
     // When "use title icon in place of chevron" is on, the icon renders in the
     // trailing (chevron) slot instead of leading the title. It rotates like a
     // chevron only when the card is collapsible; otherwise it's a static trailing icon.
+    // The expander icon is upright by default; it only rotates sideways while the
+    // card is expanded AND the collapse feature is enabled.
     const trailingIconRotates = iconAsChevron && cardCollapsible;
+    const isExpanded = cardCollapsible && !this._cardCollapsed;
     const leadingIconHtml = showLeadingIcon
       ? `<ha-icon id="pipup-title-icon" class="pipup-title-icon" icon="${cardIcon}"></ha-icon>`
       : '';
     const trailingIconHtml = iconAsChevron
-      ? `<ha-icon id="pipup-title-icon" class="pipup-title-icon pipup-title-icon-trailing${trailingIconRotates ? ` as-chevron${this._cardCollapsed ? ' collapsed' : ''}` : ''}" icon="${cardIcon}"></ha-icon>`
+      ? `<ha-icon id="pipup-title-icon" class="pipup-title-icon pipup-title-icon-trailing${trailingIconRotates ? ` as-chevron${isExpanded ? ' expanded' : ''}` : ''}" icon="${cardIcon}"></ha-icon>`
       : '';
 
     html += `
@@ -1466,7 +1463,7 @@ class PipupNotifyCard extends HTMLElement {
         <span class="pipup-title-text">${this._escapeHtml(cardTitleDisplay)}</span>
         ${config.show_version ? `<span class="pipup-title-version">${BUILD_NUMBER}</span>` : ''}
         ${trailingIconHtml}
-        ${showChevron ? `<ha-icon class="pipup-title-chevron ${this._cardCollapsed ? 'collapsed' : ''}" icon="mdi:chevron-down"></ha-icon>` : ''}
+        ${showChevron ? `<ha-icon class="pipup-title-chevron ${isExpanded ? 'expanded' : ''}" icon="mdi:chevron-down"></ha-icon>` : ''}
       </div>
       <div class="pipup-body" id="pipup-body">
         <div class="pipup-error" id="pipup-error"></div>
@@ -1739,12 +1736,13 @@ class PipupNotifyCard extends HTMLElement {
         if (body) {
           body.style.display = this._cardCollapsed ? 'none' : 'flex';
         }
+        // Rotate only while expanded; upright when collapsed.
         if (chevron) {
-          chevron.classList.toggle('collapsed', this._cardCollapsed);
+          chevron.classList.toggle('expanded', !this._cardCollapsed);
         }
         // If the title icon doubles as the chevron, rotate it too.
         if (titleIcon && titleIcon.classList.contains('as-chevron')) {
-          titleIcon.classList.toggle('collapsed', this._cardCollapsed);
+          titleIcon.classList.toggle('expanded', !this._cardCollapsed);
         }
       });
     }
