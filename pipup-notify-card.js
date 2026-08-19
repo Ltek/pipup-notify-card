@@ -1,11 +1,30 @@
 // pipup-notify-card.js
 // PiPup Notification Card for Home Assistant
-
+//
+// A Lovelace custom card to compose and send rich PiPup notifications to Android
+// TV / Fire TV, manage notification profiles, and power TVs on/off.
+//
+// Author:  LTek
+// Card:    https://github.com/Ltek/pipup-notify-card
+//
+// REQUIREMENTS (both by @mhoogenbosch — this card targets that PiPup fork):
+//   1. Home Assistant "PiPup" integration (provides the pipup.show action and the
+//      per-device notify / binary_sensor / switch entities this card drives):
+//        https://github.com/mhoogenbosch/ha-pipup
+//      Install via HACS → Integrations → Custom repositories → add the repo above
+//      as an Integration, install "PiPup", then restart Home Assistant.
+//   2. PiPup Android TV / Fire TV app (APK) installed on each TV:
+//        https://github.com/mhoogenbosch/PiPup/releases
+//      This fork is required (the Play Store build lacks the /state endpoint and
+//      indefinite popups). Some card features gate on app version, notably:
+//        app >= 0.3.0  buttons, progress bar, urgency border presets
+//        app >= 0.7.0  Screen switch (TV power on/off), border styling
+//
 // ============================================================================
 // BUILD NUMBER — update on every revision. Format: v<year>.<month>.<day>.<increment>
 // The increment is a monotonic version counter — it ALWAYS goes up, never resets
 // (even on a new day). Bump date to today AND increment by one each revision.
-const BUILD_NUMBER = 'v2026.08.06.45';
+const BUILD_NUMBER = 'v2026.08.19.54';
 // ============================================================================
 
 // Shared configuration definitions
@@ -42,13 +61,16 @@ const COLORS = [
   { value: '#CC009688', label: 'Teal' }
 ];
 
+// Ordered opaque -> transparent so the slider reads intuitively: index 0 (left) is
+// 0% transparency (fully solid) and the last index is 100% transparency (invisible).
+// The `value` is the alpha byte prepended to the "#AARRGGBB" background color.
 const TRANSPARENCY_OPTIONS = [
-  { value: '00', label: '0%' },
-  { value: '33', label: '20%' },
-  { value: '66', label: '40%' },
-  { value: '99', label: '60%' },
-  { value: 'CC', label: '80%' },
-  { value: 'FF', label: '100%' }
+  { value: 'FF', label: '0%' },
+  { value: 'CC', label: '20%' },
+  { value: '99', label: '40%' },
+  { value: '66', label: '60%' },
+  { value: '33', label: '80%' },
+  { value: '00', label: '100%' }
 ];
 
 // Rich-notification (pipup.send) media/animation option lists
@@ -88,23 +110,39 @@ const PROFILE_STORAGE_KEY = 'pipup_notify_profiles';
 // The built-in profile. It can be edited and selected, but never deleted.
 const DEFAULT_PROFILE_NAME = 'Default';
 
-// Load profiles from localStorage, always guaranteeing a non-deletable
-// "Default" profile exists at the front of the list.
-function loadProfilesWithDefault() {
-  let profiles = [];
+// Load profiles, always guaranteeing a non-deletable "Default" profile at the front.
+//
+// Profiles are stored in TWO places:
+//  - localStorage (fast, but per-browser/device — a phone won't see a PC's profiles)
+//  - the card's own config (`config.profiles`), which lives in the shared dashboard
+//    YAML and therefore syncs across every device viewing the dashboard.
+// We merge both so a profile saved on any device shows up everywhere; config-stored
+// profiles win on name collisions since that's the shared source of truth.
+function loadProfilesWithDefault(configProfiles) {
+  let local = [];
   try {
     const data = localStorage.getItem(PROFILE_STORAGE_KEY);
-    profiles = data ? JSON.parse(data) : [];
+    local = data ? JSON.parse(data) : [];
   } catch (e) {
-    profiles = [];
+    local = [];
   }
-  if (!Array.isArray(profiles)) profiles = [];
+  if (!Array.isArray(local)) local = [];
+
+  const byName = new Map();
+  local.forEach(p => { if (p && p.name) byName.set(p.name, p); });
+  // Config profiles override same-named local entries (shared source of truth).
+  if (Array.isArray(configProfiles)) {
+    configProfiles.forEach(p => { if (p && p.name) byName.set(p.name, p); });
+  }
+
+  let profiles = Array.from(byName.values());
   if (!profiles.some(p => p && p.name === DEFAULT_PROFILE_NAME)) {
     profiles.unshift({ name: DEFAULT_PROFILE_NAME, config: {} });
-    try {
-      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
-    } catch (e) {}
   }
+  // Keep localStorage in sync so this device caches the merged set.
+  try {
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
+  } catch (e) {}
   return profiles;
 }
 
@@ -309,6 +347,18 @@ class PipupNotifyCard extends HTMLElement {
       show_advanced_settings: true,
       show_message: true,
       show_selected_tvs: true,
+      // Per-device power control entity override. Map of pipup notify entity_id ->
+      // an entity_id in the switch/remote/media_player domain used for On/Off.
+      // Empty/absent for a device => use the built-in PiPup Screen switch.
+      power_entities: {},
+      // Per-device "when sending, turn on the TV first if it is off". Map of
+      // pipup notify entity_id -> boolean.
+      power_on_when_sending: {},
+      // Per-device "turn the TV off after the notification finishes". Map of
+      // pipup notify entity_id -> boolean, plus a per-device extra delay (seconds
+      // added AFTER the notification duration) before powering off.
+      power_off_after_send: {},
+      power_off_delay: {},
       debug: false,
       show_version: false
     };
@@ -335,6 +385,9 @@ class PipupNotifyCard extends HTMLElement {
     this._interrupt = true;
     this._showProgress = true;
     this._urgency = '';
+    this._notificationTitle = '';
+    this._titleColor = '#FFFFFF';
+    this._mediaWidth = 480;
     this._showEntityIds = false;
     this._button1Enabled = false;
     this._button1Label = '';
@@ -349,13 +402,21 @@ class PipupNotifyCard extends HTMLElement {
     this._cardIcon = 'mdi:bell-outline';
     this._notificationTitleEmoji = '';
     this._cardCollapsed = false;
+    // Which Target-TV rows are expanded (to show Power On/Off). Persists across
+    // re-renders within a session.
+    this._expandedTvs = new Set();
+    // Runtime per-device "turn on when sending" state (seeded from config).
+    this._powerOnWhenSending = {};
+    // Runtime per-device "turn off after send" state + extra delay seconds.
+    this._powerOffAfterSend = {};
+    this._powerOffDelay = {};
 
     // Load profiles
     this._loadProfiles();
   }
 
   _loadProfiles() {
-    this._profiles = loadProfilesWithDefault();
+    this._profiles = loadProfilesWithDefault(this._config?.profiles);
   }
 
   _saveProfiles() {
@@ -494,10 +555,16 @@ class PipupNotifyCard extends HTMLElement {
     this._notificationTitleEmoji = this._config.notification_title_emoji || '';
     this._backgroundColor = this._config.default_background_color || '#CC161616';
     this._transparency = this._config.default_transparency || 'CC';
-    // Seed the runtime urgency from the config default once (like the message), so
-    // a config round-trip doesn't reset a choice the user made on the Live Card.
+    // Seed the runtime urgency + other Live-Card overridable defaults once (like the
+    // message), so a config round-trip doesn't reset a choice made on the Live Card.
     if (!this._urgencySeeded) {
       this._urgency = this._config.default_urgency || '';
+      this._notificationTitle = this._config.notification_title || 'Home Assistant';
+      this._titleColor = this._config.title_color || '#FFFFFF';
+      this._mediaWidth = this._config.default_media_width || 480;
+      this._powerOnWhenSending = { ...(this._config.power_on_when_sending || {}) };
+      this._powerOffAfterSend = { ...(this._config.power_off_after_send || {}) };
+      this._powerOffDelay = { ...(this._config.power_off_delay || {}) };
       this._urgencySeeded = true;
     }
     DEBUG = this._config.debug || false;
@@ -589,6 +656,57 @@ class PipupNotifyCard extends HTMLElement {
       if (this._hass?.states?.[guess]) return guess;
     }
     return entityId;
+  }
+
+  // Auto-detect the built-in PiPup "Screen" power switch (switch.pipup_*_screen,
+  // app >= 0.7.0) for the device that owns the given notify/popup entity.
+  _getScreenSwitchId(entityId) {
+    if (!this._hass?.entities) return null;
+    const reg = this._hass.entities[entityId];
+    if (reg && reg.device_id) {
+      const candidates = Object.values(this._hass.entities).filter(e =>
+        e.device_id === reg.device_id && e.entity_id.startsWith('switch.')
+      );
+      // Prefer a switch whose id says "screen"; else take the device's only switch.
+      const screen = candidates.find(e => e.entity_id.toLowerCase().includes('screen'))
+        || (candidates.length === 1 ? candidates[0] : null);
+      if (screen) return screen.entity_id;
+    }
+    // Fallback: derive switch.<name>_screen from notify.<name>_notification.
+    if (entityId.startsWith('notify.')) {
+      const guess = 'switch.' + entityId.slice('notify.'.length).replace(/_notification$/, '') + '_screen';
+      if (this._hass?.states?.[guess]) return guess;
+    }
+    return null;
+  }
+
+  // Resolve the entity used for a device's On/Off control. If the user configured
+  // an override (switch/remote/media_player) for this device, use it; otherwise
+  // fall back to the auto-detected built-in PiPup Screen switch.
+  _getPowerEntityId(entityId) {
+    const override = this._config?.power_entities?.[entityId];
+    if (override && this._hass?.states?.[override]) return override;
+    return this._getScreenSwitchId(entityId);
+  }
+
+  // switch/remote/media_player all expose turn_on/turn_off; the service domain is
+  // just the entity's own domain.
+  _setDevicePower(entityId, on) {
+    const powerEntity = this._getPowerEntityId(entityId);
+    const name = stripName(this._getFriendlyName(entityId), this._config.strip_strings);
+    if (!powerEntity) {
+      this.showError(`❌ No power entity for ${name}. Set one in the editor, or install PiPup app ≥ 0.7.0.`);
+      return;
+    }
+    if (!this._hass) return;
+    const domain = powerEntity.split('.')[0];
+    this._logToHA('info', `Power ${on ? 'ON' : 'OFF'} -> ${powerEntity} (${domain})`);
+    this._hass.callService(domain, on ? 'turn_on' : 'turn_off', { entity_id: powerEntity })
+      .then(() => this.showSuccess(`✅ ${name} powered ${on ? 'on' : 'off'}.`))
+      .catch(err => {
+        console.error('[PiPup] Power control error for ' + powerEntity + ':', err);
+        this.showError(`⚠️ Failed to power ${on ? 'on' : 'off'} ${name}: ${err.message || 'error'}`);
+      });
   }
 
   _getFriendlyName(entityId) {
@@ -703,13 +821,16 @@ class PipupNotifyCard extends HTMLElement {
 
     // Build the payload for the mhoogenbosch/ha-pipup `pipup.show` action.
     const titleEmoji = this._notificationTitleEmoji || this._config.notification_title_emoji || '';
+    const notifTitle = this._notificationTitle || this._config.notification_title;
+    const titleColor = this._titleColor || this._config.title_color || '#FFFFFF';
+    const mediaWidth = this._mediaWidth || this._config.default_media_width || 480;
     const data = {
-      title: titleEmoji ? `${titleEmoji} ${this._config.notification_title}` : this._config.notification_title,
+      title: titleEmoji ? `${titleEmoji} ${notifTitle}` : notifTitle,
       message: message,
       duration: duration,
       position: POSITION_KEYS[position] !== undefined ? POSITION_KEYS[position] : 'bottom_left',
       background_color: bgColor,
-      title_color: this._config.title_color || '#FFFFFF',
+      title_color: titleColor,
       show_progress: showProgress
     };
 
@@ -720,7 +841,7 @@ class PipupNotifyCard extends HTMLElement {
       data.image_url = imageUri;
     }
     if (imageUri || videoUri) {
-      data.media_width = this._config.default_media_width || 480;
+      data.media_width = mediaWidth;
     }
 
     if (tts) {
@@ -778,6 +899,20 @@ class PipupNotifyCard extends HTMLElement {
     let errorCount = 0;
     const totalDevices = selectedDevices.length;
 
+    // "When Sending, Turn On TV if Off": for each selected device with the flag set,
+    // if its resolved power entity is currently off, turn it on before sending.
+    const autoOn = this._powerOnWhenSending || {};
+    selectedDevices.forEach(entityId => {
+      if (!autoOn[entityId]) return;
+      const powerEntity = this._getPowerEntityId(entityId);
+      if (!powerEntity) return;
+      const st = this._hass.states[powerEntity];
+      if (st && st.state === 'off') {
+        this._logToHA('info', 'Auto power-on before send -> ' + powerEntity);
+        this._setDevicePower(entityId, true);
+      }
+    });
+
     // pipup.show targets the device's popup binary_sensor, so map each selected
     // notify.* entity to its binary_sensor.pipup_*_popup counterpart.
     const sendPromises = selectedDevices.map(entityId => {
@@ -793,6 +928,20 @@ class PipupNotifyCard extends HTMLElement {
           console.error('[PiPup] Error sending to ' + popupEntity + ':', err);
           this._logToHA('error', 'Failed to send to ' + popupEntity + ': ' + (err.message || 'Unknown error'));
         });
+    });
+
+    // "Turn Off After Send": for each selected device with the flag set, schedule a
+    // power-off at (notification duration + per-device extra delay) seconds.
+    const autoOff = this._powerOffAfterSend || {};
+    const offDelays = this._powerOffDelay || {};
+    selectedDevices.forEach(entityId => {
+      if (!autoOff[entityId]) return;
+      const powerEntity = this._getPowerEntityId(entityId);
+      if (!powerEntity) return;
+      const extra = Number(offDelays[entityId]) || 0;
+      const totalMs = ((Number(duration) || 0) + extra) * 1000;
+      this._logToHA('info', `Scheduled power-off for ${powerEntity} in ${(Number(duration) || 0) + extra}s`);
+      setTimeout(() => this._setDevicePower(entityId, false), totalMs);
     });
 
     Promise.all(sendPromises)
@@ -853,6 +1002,9 @@ class PipupNotifyCard extends HTMLElement {
     const interrupt = this._interrupt !== undefined ? this._interrupt : config.interrupt_enabled;
     const showProgress = this._showProgress !== undefined ? this._showProgress : config.show_progress;
     const urgency = this._urgency !== undefined ? this._urgency : (config.default_urgency || '');
+    const notifTitle = this._notificationTitle || config.notification_title || 'Home Assistant';
+    const titleColor = this._titleColor || config.title_color || '#FFFFFF';
+    const mediaWidth = this._mediaWidth || config.default_media_width || 480;
     const showEntityIds = this._showEntityIds !== undefined ? this._showEntityIds : config.show_entity_ids;
 
     // Live Card section visibility toggles (default shown).
@@ -968,19 +1120,20 @@ class PipupNotifyCard extends HTMLElement {
         box-shadow: var(--pipup-glow);
         overflow: hidden;
       }
-      /* Unified color-swatch style: no border on any color box (Editor + Live Card) */
+      /* Color swatches get a thin translucent grey outline so a dark/black
+         selected color is still visible against a dark card background. */
       .pipup-wrap input[type="color"] {
         width: 40px;
         height: 32px;
-        border: none;
+        border: 1px solid rgba(128, 128, 128, 0.5);
         padding: 0;
         background: transparent;
         border-radius: 6px;
         cursor: pointer;
       }
       .pipup-wrap input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
-      .pipup-wrap input[type="color"]::-webkit-color-swatch { border: none; border-radius: 6px; }
-      .pipup-wrap input[type="color"]::-moz-color-swatch { border: none; border-radius: 6px; }
+      .pipup-wrap input[type="color"]::-webkit-color-swatch { border: none; border-radius: 5px; }
+      .pipup-wrap input[type="color"]::-moz-color-swatch { border: none; border-radius: 5px; }
       .pipup-title-bar {
         display: flex;
         align-items: center;
@@ -1227,48 +1380,77 @@ class PipupNotifyCard extends HTMLElement {
       }
       .pipup-device-item {
         display: flex;
+        flex-direction: column;
+        border-radius: 4px;
+        transition: background 0.2s;
+      }
+      .pipup-device-head {
+        display: flex;
         align-items: center;
         gap: 10px;
         padding: 4px 8px;
-        border-radius: 4px;
-        transition: background 0.2s;
       }
       .pipup-device-item:hover {
         background: rgba(255, 255, 255, 0.05);
       }
-      .pipup-device-item input[type="checkbox"] {
+      .pipup-device-head input[type="checkbox"] {
         width: 16px;
         height: 16px;
         cursor: pointer;
         accent-color: #2196F3;
+        flex-shrink: 0;
       }
-      .pipup-device-item .device-name {
+      .pipup-device-head .device-name {
         flex: 1;
         color: var(--primary-text-color, #e1e1e1);
         font-size: 14px;
+        cursor: pointer;
       }
-      .pipup-device-item .device-id {
+      .pipup-device-head .device-id {
         font-size: 11px;
         color: var(--secondary-text-color, #808080);
         display: ${showEntityIds ? 'inline' : 'none'};
       }
-      .pipup-device-item .device-status {
+      .pipup-device-head .device-status {
         font-size: 11px;
         padding: 2px 8px;
         border-radius: 10px;
         font-weight: 500;
+        white-space: nowrap;
       }
-      .pipup-device-item .device-status.online {
+      .pipup-device-head .device-status.online {
         color: #4CAF50;
         background: rgba(76, 175, 80, 0.15);
       }
-      .pipup-device-item .device-status.offline {
+      .pipup-device-head .device-status.offline {
         color: #f44336;
         background: rgba(244, 67, 54, 0.15);
       }
-      .pipup-device-item .device-status.unknown {
+      /* Powered-off state: yellow (red is reserved for the Offline connectivity chip). */
+      .pipup-device-head .device-status.poweroff {
+        color: #FFC107;
+        background: rgba(255, 193, 7, 0.15);
+      }
+      .pipup-device-head .device-status.unknown {
         color: var(--secondary-text-color, #808080);
         background: rgba(128, 128, 128, 0.1);
+      }
+      .pipup-device-chevron {
+        color: var(--secondary-text-color, #808080);
+        --mdc-icon-size: 18px;
+        cursor: pointer;
+        transition: transform 0.2s ease;
+        flex-shrink: 0;
+      }
+      .pipup-device-chevron.expanded {
+        transform: rotate(180deg);
+      }
+      .pipup-device-body {
+        display: flex;
+        gap: 8px;
+        padding: 4px 8px 8px 34px;
+        flex-wrap: wrap;
+        align-items: center;
       }
       .pipup-button-section {
         padding: 4px 8px;
@@ -1278,6 +1460,37 @@ class PipupNotifyCard extends HTMLElement {
         font-weight: 500;
         color: var(--secondary-text-color, #808080);
         margin-bottom: 4px;
+      }
+      .pipup-power-btn {
+        padding: 4px 14px;
+        border: 1px solid var(--divider-color, #444);
+        border-radius: 6px;
+        background: var(--secondary-background-color, #2a2a2a);
+        color: var(--primary-text-color, #e1e1e1);
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+      .pipup-power-btn:hover:not(:disabled) { filter: brightness(1.2); }
+      .pipup-power-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+      .pipup-power-btn.on.active {
+        background: #4CAF50; border-color: #4CAF50; color: #fff;
+      }
+      .pipup-power-btn.off.active {
+        background: #555; border-color: #555; color: #fff;
+      }
+      .pipup-power-autoon {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        margin-top: 4px;
+        color: var(--primary-text-color, #e1e1e1);
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .pipup-power-autoon input[type="checkbox"] {
+        width: 16px; height: 16px; cursor: pointer; accent-color: #2196F3;
       }
       .pipup-button-row-inline {
         display: flex;
@@ -1494,12 +1707,42 @@ class PipupNotifyCard extends HTMLElement {
           const statusIcon = status === 'online' ? 'mdi:circle' : (status === 'offline' ? 'mdi:circle-outline' : 'mdi:help-circle-outline');
           const statusText = status === 'online' ? 'Online' : (status === 'offline' ? 'Offline' : 'Unknown');
 
+          // Power state chip from the resolved power entity (switch/remote/media_player).
+          const powerEntity = this._getPowerEntityId(entity.entity_id);
+          const powerState = powerEntity && this._hass?.states?.[powerEntity] ? this._hass.states[powerEntity].state : null;
+          const powerOn = powerState === 'on';
+          const powerClass = powerOn ? 'online' : (powerState === 'off' ? 'poweroff' : 'unknown');
+          const powerText = powerOn ? 'On' : (powerState === 'off' ? 'Off' : '—');
+          const expanded = this._expandedTvs && this._expandedTvs.has(entity.entity_id);
+
           return `
-            <div class="pipup-device-item">
-              <input type="checkbox" class="device-checkbox" value="${entity.entity_id}" ${isSelected ? 'checked' : ''}>
-              <span class="device-name">${this._escapeHtml(friendlyName)}</span>
-              <span class="device-id">${entity.entity_id}</span>
-              <span class="device-status ${statusClass}"><ha-icon icon="${statusIcon}" style="--mdc-icon-size:11px;vertical-align:middle;"></ha-icon> ${statusText}</span>
+            <div class="pipup-device-item${expanded ? ' expanded' : ''}" data-entity="${entity.entity_id}">
+              <div class="pipup-device-head">
+                <input type="checkbox" class="device-checkbox" value="${entity.entity_id}" ${isSelected ? 'checked' : ''}>
+                <span class="device-name">${this._escapeHtml(friendlyName)}</span>
+                <span class="device-id">${entity.entity_id}</span>
+                <span class="device-status ${powerClass}" title="Power"><ha-icon icon="mdi:power" style="--mdc-icon-size:11px;vertical-align:middle;"></ha-icon> ${powerText}</span>
+                <span class="device-status ${statusClass}"><ha-icon icon="${statusIcon}" style="--mdc-icon-size:11px;vertical-align:middle;"></ha-icon> ${statusText}</span>
+                <ha-icon class="pipup-device-chevron${expanded ? ' expanded' : ''}" icon="mdi:chevron-down"></ha-icon>
+              </div>
+              <div class="pipup-device-body" style="display:${expanded ? 'flex' : 'none'};">
+                <button class="pipup-power-btn on ${powerOn ? 'active' : ''}" data-entity="${entity.entity_id}" data-power="on" ${powerEntity ? '' : 'disabled'}><ha-icon icon="mdi:power" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> Power On</button>
+                <button class="pipup-power-btn off ${powerState === 'off' ? 'active' : ''}" data-entity="${entity.entity_id}" data-power="off" ${powerEntity ? '' : 'disabled'}><ha-icon icon="mdi:power-off" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> Power Off</button>
+                ${powerEntity ? '' : '<span class="pip-hint" style="align-self:center;">No power entity — set one in the editor.</span>'}
+                <label class="pipup-power-autoon" title="When you send a notification, turn this TV on first if it's currently off">
+                  <input type="checkbox" class="pipup-autoon-check" data-entity="${entity.entity_id}" ${this._powerOnWhenSending?.[entity.entity_id] ? 'checked' : ''} ${powerEntity ? '' : 'disabled'}>
+                  Turn On if Off
+                </label>
+                <label class="pipup-power-autoon" title="After the notification finishes, turn this TV off">
+                  <input type="checkbox" class="pipup-autooff-check" data-entity="${entity.entity_id}" ${this._powerOffAfterSend?.[entity.entity_id] ? 'checked' : ''} ${powerEntity ? '' : 'disabled'}>
+                  Turn Off After Send
+                </label>
+                <div class="pipup-power-offdelay" data-entity="${entity.entity_id}" style="display:${this._powerOffAfterSend?.[entity.entity_id] ? 'flex' : 'none'};align-items:center;gap:8px;width:100%;">
+                  <span style="font-size:12px;color:var(--secondary-text-color, #808080);white-space:nowrap;">Off delay after notification</span>
+                  <input type="range" class="pipup-offdelay-slider" data-entity="${entity.entity_id}" min="0" max="120" step="1" value="${Number(this._powerOffDelay?.[entity.entity_id]) || 0}" style="flex:1;accent-color:#2196F3;">
+                  <span class="pipup-offdelay-value" style="font-size:12px;color:var(--primary-text-color, #e1e1e1);min-width:34px;text-align:right;">${Number(this._powerOffDelay?.[entity.entity_id]) || 0}s</span>
+                </div>
+              </div>
             </div>
           `;
         }).join('') : `
@@ -1580,6 +1823,15 @@ class PipupNotifyCard extends HTMLElement {
 
     if (showAdvancedSettings) html += `
       <div class="pipup-row">
+        <span class="pipup-row-label">Notif. Title</span>
+        <div class="pipup-row-value">
+          <input type="text" id="pipup-notif-title" value="${this._escapeHtml(notifTitle)}" placeholder="Home Assistant">
+        </div>
+      </div>
+    `;
+
+    if (showAdvancedSettings) html += `
+      <div class="pipup-row">
         <span class="pipup-row-label">Urgency</span>
         <div class="pipup-row-value">
           <select id="pipup-urgency">
@@ -1601,12 +1853,19 @@ class PipupNotifyCard extends HTMLElement {
       </div>
     `;
 
+    if (showAdvancedSettings) html += `
+      <div class="pipup-color-picker-row">
+        <label>Title Color</label>
+        <input type="color" id="pipup-title-color" value="${titleColor}">
+      </div>
+    `;
+
     const transIdx = TRANSPARENCY_OPTIONS.findIndex(t => t.value === transparency);
     if (showAdvancedSettings) html += `
       <div class="pipup-transparency-row">
         <label>Transparency</label>
-        <input type="range" id="pipup-transparency" min="0" max="5" step="1" value="${transIdx >= 0 ? transIdx : 4}">
-        <span class="transparency-value" id="pipup-transparency-value">${TRANSPARENCY_OPTIONS[transIdx >= 0 ? transIdx : 4].label}</span>
+        <input type="range" id="pipup-transparency" min="0" max="5" step="1" value="${transIdx >= 0 ? transIdx : 1}">
+        <span class="transparency-value" id="pipup-transparency-value">${TRANSPARENCY_OPTIONS[transIdx >= 0 ? transIdx : 1].label}</span>
       </div>
     `;
 
@@ -1659,12 +1918,6 @@ class PipupNotifyCard extends HTMLElement {
           <input type="text" class="button-id" data-button="3" value="${this._escapeHtml(this._button3Id || '')}" placeholder="ID" class="btn-id">
         </div>
 
-        <div class="pipup-row" style="padding-top:4px;">
-          <span class="pipup-row-label" style="min-width:80px;font-size:13px;">Button Color</span>
-          <div class="pipup-row-value">
-            <input type="color" id="pipup-button-color" value="${this._config.button_color || '#1565C0'}">
-          </div>
-        </div>
       </div>
       <div style="font-size:11px;color:var(--secondary-text-color);padding:0 8px 4px;">
         <ha-icon icon="mdi:lightbulb-on-outline" style="--mdc-icon-size:13px;vertical-align:middle;"></ha-icon> Buttons fire a <code>pipup_button</code> event. Use automation to react: <code>event_type: pipup_button</code>
@@ -1685,8 +1938,17 @@ class PipupNotifyCard extends HTMLElement {
           <input type="text" id="pipup-video-uri" value="${this._escapeHtml(this._videoUri || '')}" placeholder="rtsp:// or .m3u8 (live camera stream)">
         </div>
       </div>
+      <div class="pipup-row">
+        <span class="pipup-row-label">Media Width</span>
+        <div class="pipup-row-value">
+          <div class="pipup-row-with-unit">
+            <input type="range" id="pipup-media-width" min="0" max="4000" step="10" value="${mediaWidth}">
+            <span class="duration-value" id="pipup-media-width-value">${mediaWidth}px</span>
+          </div>
+        </div>
+      </div>
       <div style="font-size:11px;color:var(--secondary-text-color, #808080);padding:0 8px 4px;">
-        <ha-icon icon="mdi:lightbulb-on-outline" style="--mdc-icon-size:13px;vertical-align:middle;"></ha-icon> If both are set, the video stream takes priority.
+        <ha-icon icon="mdi:lightbulb-on-outline" style="--mdc-icon-size:13px;vertical-align:middle;"></ha-icon> If both are set, the video stream takes priority. Media Width applies to the image/video.
       </div>
     `;
 
@@ -1713,6 +1975,10 @@ class PipupNotifyCard extends HTMLElement {
     const durationValue = this.querySelector('#pipup-duration-value');
     const positionSelect = this.querySelector('#pipup-position');
     const urgencySelect = this.querySelector('#pipup-urgency');
+    const notifTitleInput = this.querySelector('#pipup-notif-title');
+    const titleColorPicker = this.querySelector('#pipup-title-color');
+    const mediaWidthSlider = this.querySelector('#pipup-media-width');
+    const mediaWidthValue = this.querySelector('#pipup-media-width-value');
     const colorPicker = this.querySelector('#pipup-color');
     const transparencySlider = this.querySelector('#pipup-transparency');
     const transparencyValue = this.querySelector('#pipup-transparency-value');
@@ -1789,6 +2055,66 @@ class PipupNotifyCard extends HTMLElement {
       };
     });
 
+    // Per-device power on/off buttons (resolved power entity).
+    this.querySelectorAll('.pipup-power-btn').forEach(btn => {
+      btn.onclick = () => {
+        if (btn.disabled) return;
+        this._setDevicePower(btn.dataset.entity, btn.dataset.power === 'on');
+      };
+    });
+
+    // Per-device "turn on when sending" toggle. Runtime state on the Live Card
+    // (seeded from config); the editor sets the persisted default.
+    this.querySelectorAll('.pipup-autoon-check').forEach(cb => {
+      cb.onclick = (e) => e.stopPropagation(); // don't toggle row expand
+      cb.onchange = () => {
+        if (!this._powerOnWhenSending) this._powerOnWhenSending = {};
+        this._powerOnWhenSending[cb.dataset.entity] = cb.checked;
+      };
+    });
+
+    // "Turn Off After Send" toggle — reveals/hides the delay slider for that row.
+    this.querySelectorAll('.pipup-autooff-check').forEach(cb => {
+      cb.onclick = (e) => e.stopPropagation();
+      cb.onchange = () => {
+        if (!this._powerOffAfterSend) this._powerOffAfterSend = {};
+        this._powerOffAfterSend[cb.dataset.entity] = cb.checked;
+        const delayRow = this.querySelector(`.pipup-power-offdelay[data-entity="${cb.dataset.entity}"]`);
+        if (delayRow) delayRow.style.display = cb.checked ? 'flex' : 'none';
+      };
+    });
+
+    // Off-delay slider (seconds AFTER the notification duration).
+    this.querySelectorAll('.pipup-offdelay-slider').forEach(sl => {
+      sl.onclick = (e) => e.stopPropagation();
+      sl.oninput = () => {
+        if (!this._powerOffDelay) this._powerOffDelay = {};
+        const v = parseInt(sl.value) || 0;
+        this._powerOffDelay[sl.dataset.entity] = v;
+        const valEl = sl.parentElement && sl.parentElement.querySelector('.pipup-offdelay-value');
+        if (valEl) valEl.textContent = `${v}s`;
+      };
+    });
+
+    // Expand/collapse each Target-TV row (clicking the head, but not the checkbox)
+    // to reveal its Power On/Off buttons.
+    this.querySelectorAll('.pipup-device-item').forEach(item => {
+      const head = item.querySelector('.pipup-device-head');
+      const bodyEl = item.querySelector('.pipup-device-body');
+      const chev = item.querySelector('.pipup-device-chevron');
+      const entityId = item.dataset.entity;
+      if (!head || !bodyEl || !entityId) return;
+      head.addEventListener('click', (e) => {
+        if (e.target.closest('.device-checkbox')) return; // let the checkbox work
+        const nowExpanded = !(this._expandedTvs && this._expandedTvs.has(entityId));
+        if (!this._expandedTvs) this._expandedTvs = new Set();
+        if (nowExpanded) this._expandedTvs.add(entityId); else this._expandedTvs.delete(entityId);
+        bodyEl.style.display = nowExpanded ? 'flex' : 'none';
+        item.classList.toggle('expanded', nowExpanded);
+        if (chev) chev.classList.toggle('expanded', nowExpanded);
+      });
+    });
+
     this.querySelectorAll('.button-enable').forEach(cb => {
       cb.onchange = () => {
         const btnNum = cb.dataset.button;
@@ -1853,6 +2179,21 @@ class PipupNotifyCard extends HTMLElement {
       };
     }
 
+    if (notifTitleInput) {
+      notifTitleInput.onchange = () => { this._notificationTitle = notifTitleInput.value; };
+    }
+
+    if (titleColorPicker) {
+      titleColorPicker.oninput = () => { this._titleColor = titleColorPicker.value; };
+    }
+
+    if (mediaWidthSlider && mediaWidthValue) {
+      mediaWidthSlider.oninput = () => {
+        this._mediaWidth = parseInt(mediaWidthSlider.value) || 0;
+        mediaWidthValue.textContent = `${this._mediaWidth}px`;
+      };
+    }
+
     if (colorPicker) {
       colorPicker.oninput = () => {
         // Preserve the current transparency (alpha) byte while updating the RGB.
@@ -1863,7 +2204,7 @@ class PipupNotifyCard extends HTMLElement {
     if (transparencySlider && transparencyValue) {
       transparencySlider.oninput = () => {
         const idx = parseInt(transparencySlider.value) || 0;
-        const opt = TRANSPARENCY_OPTIONS[idx] || TRANSPARENCY_OPTIONS[4];
+        const opt = TRANSPARENCY_OPTIONS[idx] || TRANSPARENCY_OPTIONS[1];
         this._transparency = opt.value;
         transparencyValue.textContent = opt.label;
       };
@@ -1898,6 +2239,9 @@ class PipupNotifyCard extends HTMLElement {
         if (durationSlider) this._duration = parseInt(durationSlider.value) || 0;
         if (positionSelect) this._position = parseInt(positionSelect.value);
         if (urgencySelect) this._urgency = urgencySelect.value;
+        if (notifTitleInput) this._notificationTitle = notifTitleInput.value;
+        if (titleColorPicker) this._titleColor = titleColorPicker.value;
+        if (mediaWidthSlider) this._mediaWidth = parseInt(mediaWidthSlider.value) || 0;
         if (colorPicker) {
           this._backgroundColor = hexToCcColor(colorPicker.value, this._transparency);
         }
@@ -1941,20 +2285,39 @@ class PipupNotifyCard extends HTMLElement {
   updateStates() {
     const pipupEntities = this._getPipupEntities();
 
-    const deviceItems = this.querySelectorAll('.pipup-device-item');
-    deviceItems.forEach((item, index) => {
-      if (index < pipupEntities.length) {
-        const entity = pipupEntities[index];
-        const status = this._getDeviceStatus(entity.entity_id);
-        const statusEl = item.querySelector('.device-status');
-        if (statusEl) {
-          const statusClass = status === 'online' ? 'online' : (status === 'offline' ? 'offline' : 'unknown');
-          const statusIcon = status === 'online' ? 'mdi:circle' : (status === 'offline' ? 'mdi:circle-outline' : 'mdi:help-circle-outline');
-          const statusText = status === 'online' ? 'Online' : (status === 'offline' ? 'Offline' : 'Unknown');
-          statusEl.className = `device-status ${statusClass}`;
-          statusEl.innerHTML = `<ha-icon icon="${statusIcon}" style="--mdc-icon-size:11px;vertical-align:middle;"></ha-icon> ${statusText}`;
-        }
+    // Update each Target-TV row's connectivity + power chips and power buttons,
+    // keyed by the row's entity id (each row has two .device-status chips: the
+    // first is Power, the second is connectivity).
+    this.querySelectorAll('.pipup-device-item').forEach(item => {
+      const entityId = item.dataset.entity;
+      if (!entityId) return;
+      const chips = item.querySelectorAll('.pipup-device-head .device-status');
+      const powerChip = chips[0];
+      const connChip = chips[1];
+
+      // Connectivity chip.
+      const status = this._getDeviceStatus(entityId);
+      if (connChip) {
+        const statusClass = status === 'online' ? 'online' : (status === 'offline' ? 'offline' : 'unknown');
+        const statusIcon = status === 'online' ? 'mdi:circle' : (status === 'offline' ? 'mdi:circle-outline' : 'mdi:help-circle-outline');
+        const statusText = status === 'online' ? 'Online' : (status === 'offline' ? 'Offline' : 'Unknown');
+        connChip.className = `device-status ${statusClass}`;
+        connChip.innerHTML = `<ha-icon icon="${statusIcon}" style="--mdc-icon-size:11px;vertical-align:middle;"></ha-icon> ${statusText}`;
       }
+
+      // Power chip + buttons.
+      const powerEntity = this._getPowerEntityId(entityId);
+      const powerState = powerEntity && this._hass?.states?.[powerEntity] ? this._hass.states[powerEntity].state : null;
+      if (powerChip) {
+        const powerClass = powerState === 'on' ? 'online' : (powerState === 'off' ? 'poweroff' : 'unknown');
+        const powerText = powerState === 'on' ? 'On' : (powerState === 'off' ? 'Off' : '—');
+        powerChip.className = `device-status ${powerClass}`;
+        powerChip.innerHTML = `<ha-icon icon="mdi:power" style="--mdc-icon-size:11px;vertical-align:middle;"></ha-icon> ${powerText}`;
+      }
+      const onBtn = item.querySelector('.pipup-power-btn.on');
+      const offBtn = item.querySelector('.pipup-power-btn.off');
+      if (onBtn) onBtn.classList.toggle('active', powerState === 'on');
+      if (offBtn) offBtn.classList.toggle('active', powerState === 'off');
     });
 
     // Live-update the status-driven visuals (glow-when-online and the title icon
@@ -2095,6 +2458,99 @@ class PipupNotifyCardEditor extends HTMLElement {
     }).join('');
   }
 
+  // Build the <option> list for a device's power-entity dropdown, filtered to the
+  // given set of allowed domains ('switch'|'remote'|'media_player'). Always includes
+  // the "auto" option and a saved-but-unavailable value so nothing is silently lost.
+  _powerSelectOptionsHtml(deviceEntityId, allowedDomains) {
+    const powerMap = this._config.power_entities || {};
+    const current = powerMap[deviceEntityId] || '';
+    const missing = current && !this._hass?.states?.[current];
+    const optName = (id) => {
+      const st = this._hass.states[id];
+      const fn = st && st.attributes && st.attributes.friendly_name;
+      return fn ? `${fn} (${id})` : id;
+    };
+    const candidates = Object.keys(this._hass.states || {})
+      .filter(id => {
+        const domain = id.split('.')[0];
+        if (!['switch', 'remote', 'media_player'].includes(domain)) return false;
+        return allowedDomains.includes(domain);
+      })
+      .sort();
+    return `
+      <option value="" ${!current ? 'selected' : ''}>PiPup Screen (auto)</option>
+      ${missing ? `<option value="${current}" selected>${current} (unavailable)</option>` : ''}
+      ${candidates.map(id => `<option value="${id}" ${current === id ? 'selected' : ''}>${this._escapeHtml(optName(id))}</option>`).join('')}
+    `;
+  }
+
+  // Per-device power-entity picker for Card Settings. Each PiPup device gets domain
+  // filter checkboxes (Remote / Media Player / Switch) that narrow a dropdown of
+  // "PiPup Screen (auto)" plus matching switch / remote / media_player entities.
+  _renderPowerControlBody() {
+    if (!this._hass) {
+      return `<div class="pip-hint">Loading…</div>`;
+    }
+    const tvs = discoverPipupTvs(this._hass);
+    if (tvs.length === 0) {
+      return `<div class="pip-hint">No PiPup devices found.</div>`;
+    }
+    const stripStrings = this._config.strip_strings !== undefined ? this._config.strip_strings : 'PiPup';
+    const powerMap = this._config.power_entities || {};
+    const DOMAINS = [
+      { key: 'remote', label: 'Remote' },
+      { key: 'media_player', label: 'Media Player' },
+      { key: 'switch', label: 'Switch' },
+    ];
+
+    return tvs.map(tv => {
+      const displayName = stripName(tv.friendlyName, stripStrings);
+      const current = powerMap[tv.entityId] || '';
+      // Default the domain filter to the domain of the current override (if any),
+      // otherwise show all three so the picker starts populated.
+      const currentDomain = current ? current.split('.')[0] : '';
+      const initialAllowed = currentDomain ? [currentDomain] : DOMAINS.map(d => d.key);
+      return `
+        <div class="pip-power-cfg" data-entity="${tv.entityId}" style="border-top:1px solid #333;padding-top:6px;margin-top:6px;">
+          <div class="pip-row" style="margin-bottom:2px;">
+            <label class="lbl" title="${tv.entityId}">${this._escapeHtml(displayName)}</label>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;flex:1;">
+              ${DOMAINS.map(d => `
+                <label class="pip-check" style="font-size:12px;">
+                  <input type="checkbox" class="ed-power-domain" data-entity="${tv.entityId}" data-domain="${d.key}" ${initialAllowed.includes(d.key) ? 'checked' : ''}> ${d.label}
+                </label>
+              `).join('')}
+            </div>
+          </div>
+          <div class="pip-row" style="margin-top:0;">
+            <label class="lbl"></label>
+            <select class="ed-power-entity" data-entity="${tv.entityId}">
+              ${this._powerSelectOptionsHtml(tv.entityId, initialAllowed)}
+            </select>
+          </div>
+          <div class="pip-row" style="margin-top:0;">
+            <label class="lbl"></label>
+            <label class="pip-check" style="font-size:12px;">
+              <input type="checkbox" class="ed-power-autoon" data-entity="${tv.entityId}" ${this._config.power_on_when_sending?.[tv.entityId] ? 'checked' : ''}> Turn On if Off
+            </label>
+          </div>
+          <div class="pip-row" style="margin-top:0;">
+            <label class="lbl"></label>
+            <label class="pip-check" style="font-size:12px;">
+              <input type="checkbox" class="ed-power-autooff" data-entity="${tv.entityId}" ${this._config.power_off_after_send?.[tv.entityId] ? 'checked' : ''}> Turn Off After Send
+            </label>
+          </div>
+          <div class="pip-row" style="margin-top:0;display:${this._config.power_off_after_send?.[tv.entityId] ? 'flex' : 'none'};" data-offdelay-row="${tv.entityId}">
+            <label class="lbl">Off Delay</label>
+            <input type="range" class="ed-power-offdelay" data-entity="${tv.entityId}" min="0" max="120" step="1" value="${Number(this._config.power_off_delay?.[tv.entityId]) || 0}">
+            <span class="pip-val" data-offdelay-val="${tv.entityId}">${Number(this._config.power_off_delay?.[tv.entityId]) || 0}s</span>
+          </div>
+          <div class="pip-hint" style="margin:0 0 2px 112px;">Seconds after the notification duration ends.</div>
+        </div>
+      `;
+    }).join('');
+  }
+
   // Only rebuild the TV list when the actual set/status of devices changes so that a
   // hass update never clobbers a checkbox the user just toggled.
   _updateTvList() {
@@ -2161,7 +2617,7 @@ class PipupNotifyCardEditor extends HTMLElement {
   _refreshProfileChips() {
     const list = this.querySelector('#editor-profile-list');
     if (!list) return;
-    list.innerHTML = this._renderProfileChips(loadProfilesWithDefault());
+    list.innerHTML = this._renderProfileChips(loadProfilesWithDefault(this._config?.profiles));
     this._attachProfileChipListeners();
   }
 
@@ -2193,9 +2649,13 @@ class PipupNotifyCardEditor extends HTMLElement {
           const name = removeBtn.dataset.name;
           if (name && name !== DEFAULT_PROFILE_NAME) {
             try {
-              let profiles = loadProfilesWithDefault();
+              let profiles = loadProfilesWithDefault(this._config?.profiles);
               profiles = profiles.filter(p => p.name !== name);
               localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
+              // Also drop it from the shared config copy and push that change so the
+              // deletion syncs across devices.
+              this._config = { ...this._config, profiles: profiles.filter(p => p.name !== DEFAULT_PROFILE_NAME) };
+              this._fire(this._config);
               // Only the chip list changed — refresh it in place, no full rebuild.
               this._refreshProfileChips();
             } catch (e) {}
@@ -2209,7 +2669,7 @@ class PipupNotifyCardEditor extends HTMLElement {
     const cfg = this._config;
     const hasToken = !!(cfg.token && cfg.token.trim());
 
-    const profiles = loadProfilesWithDefault();
+    const profiles = loadProfilesWithDefault(cfg.profiles);
 
     const transIdx = TRANSPARENCY_OPTIONS.findIndex(t => t.value === (cfg.default_transparency || 'CC'));
 
@@ -2223,12 +2683,13 @@ class PipupNotifyCardEditor extends HTMLElement {
         .pip-sub-label ha-icon { --mdc-icon-size:17px; }
         .pip-behavior-row ha-icon { --mdc-icon-size:19px; }
         .pipup-editor input[type="color"] {
-          width:40px; height:32px; padding:0; border:none;
+          width:40px; height:32px; padding:0;
+          border:1px solid rgba(128, 128, 128, 0.5);
           background:transparent; border-radius:6px; cursor:pointer;
         }
         .pipup-editor input[type="color"]::-webkit-color-swatch-wrapper { padding:0; }
-        .pipup-editor input[type="color"]::-webkit-color-swatch { border:none; border-radius:6px; }
-        .pipup-editor input[type="color"]::-moz-color-swatch { border:none; border-radius:6px; }
+        .pipup-editor input[type="color"]::-webkit-color-swatch { border:none; border-radius:5px; }
+        .pipup-editor input[type="color"]::-moz-color-swatch { border:none; border-radius:5px; }
         .pip-sec {
           border:1px solid #333; border-radius:8px;
           background:var(--ha-card-background, #1a1a1a); overflow:hidden;
@@ -2492,6 +2953,12 @@ class PipupNotifyCardEditor extends HTMLElement {
 
     `;
 
+    // --- TV Power Control body (own collapsible panel) ---
+    const powerControlBody = `
+      <div class="pip-hint" style="margin-bottom:6px;">Choose which entity powers each TV on/off. "PiPup Screen (auto)" uses the built-in PiPup switch; or pick a switch, remote, or media_player entity (e.g. Android TV / Google Cast).</div>
+      ${this._renderPowerControlBody()}
+    `;
+
     // --- Notification Settings body (now also holds the former "Visual Styling" rows) ---
     const notifSettingsBody = `
       <div class="pip-row">
@@ -2519,17 +2986,12 @@ class PipupNotifyCardEditor extends HTMLElement {
       </div>
       <div class="pip-row">
         <label class="lbl">Transparency</label>
-        <input type="range" id="editor-default-transparency" min="0" max="5" step="1" value="${transIdx >= 0 ? transIdx : 4}">
-        <span class="pip-val" id="editor-default-transparency-value">${TRANSPARENCY_OPTIONS[transIdx >= 0 ? transIdx : 4].label}</span>
+        <input type="range" id="editor-default-transparency" min="0" max="5" step="1" value="${transIdx >= 0 ? transIdx : 1}">
+        <span class="pip-val" id="editor-default-transparency-value">${TRANSPARENCY_OPTIONS[transIdx >= 0 ? transIdx : 1].label}</span>
       </div>
       <div class="pip-row">
         <label class="lbl">Title Color</label>
         <input type="color" id="editor-title-color" value="${cfg.title_color || '#FFFFFF'}">
-      </div>
-      <div class="pip-row">
-        <label class="lbl">Corner Radius</label>
-        <input type="range" id="editor-corner-radius" min="0" max="50" step="1" value="${cfg.corner_radius || 18}">
-        <span class="pip-val" id="editor-corner-radius-value">${cfg.corner_radius || 18}px</span>
       </div>
       <div class="pip-row">
         <label class="lbl">Urgency</label>
@@ -2567,10 +3029,7 @@ class PipupNotifyCardEditor extends HTMLElement {
           <input type="text" id="editor-button${n}-id" value="${this._escapeHtml(cfg['button' + n + '_id'] || '')}" placeholder="ID" style="min-width:60px;">
         </div>
       `).join('')}
-      <div class="pip-row">
-        <label class="lbl">Button Color</label>
-        <input type="color" id="editor-button-color" value="${cfg.button_color || '#1565C0'}">
-      </div>
+      <div class="pip-hint" style="padding-top:2px;">Button color follows the PiPup app theme on the TV; a per-button color isn't supported by the integration.</div>
     `;
 
     // --- Behavior body (now also holds Display Time) ---
@@ -2588,35 +3047,16 @@ class PipupNotifyCardEditor extends HTMLElement {
     `;
 
     // --- Media & Animation body ---
+    // Only Media Width is currently supported by the integration; Media Position,
+    // Title Alignment, Animation type/duration are hidden (kept in config/logic for
+    // when/if the integration adds them).
     const mediaBody = `
       <div class="pip-row">
         <label class="lbl">Media Width</label>
         <input type="range" id="editor-default-media-width" min="0" max="4000" step="10" value="${cfg.default_media_width || 480}">
         <span class="pip-val" id="editor-default-media-width-value">${cfg.default_media_width || 480}px</span>
       </div>
-      <div class="pip-row">
-        <label class="lbl">Media Position</label>
-        <select id="editor-default-media-position">
-          ${MEDIA_POSITIONS.map(opt => `<option value="${opt.value}" ${cfg.default_media_position === opt.value ? 'selected' : ''}>${opt.label}</option>`).join('')}
-        </select>
-      </div>
-      <div class="pip-row">
-        <label class="lbl">Title Alignment</label>
-        <select id="editor-default-title-alignment">
-          ${TITLE_ALIGNMENTS.map(opt => `<option value="${opt.value}" ${cfg.default_title_alignment === opt.value ? 'selected' : ''}>${opt.label}</option>`).join('')}
-        </select>
-      </div>
-      <div class="pip-row">
-        <label class="lbl">Animation</label>
-        <select id="editor-default-animation-type">
-          ${ANIMATION_TYPES.map(opt => `<option value="${opt.value}" ${cfg.default_animation_type === opt.value ? 'selected' : ''}>${opt.label}</option>`).join('')}
-        </select>
-      </div>
-      <div class="pip-row">
-        <label class="lbl">Anim. Duration</label>
-        <input type="range" id="editor-default-animation-duration" min="0" max="5000" step="50" value="${cfg.default_animation_duration !== undefined ? cfg.default_animation_duration : 250}">
-        <span class="pip-val" id="editor-default-animation-duration-value">${cfg.default_animation_duration !== undefined ? cfg.default_animation_duration : 250}ms</span>
-      </div>
+      <div class="pip-hint" style="padding-top:2px;">Applies to an image/video sent with the notification.</div>
     `;
 
     // --- Jinja body ---
@@ -2676,6 +3116,7 @@ class PipupNotifyCardEditor extends HTMLElement {
 
         ${this._section('mdi:palette', 'Card Settings', 'editor-card-visuals-body', cardVisualsBody, { desc: 'Appearance of the PiPup card itself' })}
         ${this._section('mdi:folder-star-outline', 'Notification Profiles', 'editor-notification-visuals-body', profileCreatorSection, { desc: 'Build a notification profile: pick TVs, style it, and save it as a preset' })}
+        ${this._section('mdi:power', 'TV Power Control', 'editor-power-control-body', powerControlBody, { desc: 'Choose the on/off entity used for each TV' })}
         ${this._section('mdi:shield-key', 'Admin Settings', 'editor-admin-body', adminBody, { desc: 'These settings are not saved with profiles', border: '#f44336', color: '#f44336' })}
 
         <div style="border-top:1px solid #333;padding-top:12px;margin-top:4px;">
@@ -2731,6 +3172,10 @@ class PipupNotifyCardEditor extends HTMLElement {
           return;
         }
         const config = { ...this._config };
+        // A profile stores card settings only — never the profile list itself or the
+        // active-profile pointer (those live on the card config, not inside a profile).
+        delete config.profiles;
+        delete config.active_profile;
         const fields = [
           'token', 'strip_strings', 'card_title', 'card_icon',
           'notification_title', 'notification_title_emoji', 'default_message',
@@ -2753,7 +3198,7 @@ class PipupNotifyCardEditor extends HTMLElement {
         const transEl = this.querySelector('#editor-default-transparency');
         if (transEl) {
           const idx = parseInt(transEl.value) || 0;
-          config.default_transparency = (TRANSPARENCY_OPTIONS[idx] || TRANSPARENCY_OPTIONS[4]).value;
+          config.default_transparency = (TRANSPARENCY_OPTIONS[idx] || TRANSPARENCY_OPTIONS[1]).value;
         }
 
         fields.forEach(key => {
@@ -2824,7 +3269,7 @@ class PipupNotifyCardEditor extends HTMLElement {
           .map(el => el.value);
 
         try {
-          let profiles = loadProfilesWithDefault();
+          let profiles = loadProfilesWithDefault(this._config?.profiles);
           const profile = { name: name, config: config };
           const existing = profiles.findIndex(p => p.name === name);
           if (existing >= 0) {
@@ -2833,10 +3278,14 @@ class PipupNotifyCardEditor extends HTMLElement {
             profiles.push(profile);
           }
           localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
-          // Persist the whole config (including selected_devices for this profile)
-          // to the card's YAML config so the saved settings survive a reload and
-          // are visible in the card configuration.
-          this._config = { ...config, active_profile: name };
+          // Persist the whole config to the card's YAML config AND store the full
+          // profiles list there (excluding the auto-created Default) so profiles
+          // sync across devices — localStorage alone is per-browser.
+          this._config = {
+            ...config,
+            active_profile: name,
+            profiles: profiles.filter(p => p.name !== DEFAULT_PROFILE_NAME)
+          };
           this._fire(this._config);
           // Update ONLY the chip list in place — do not rebuild the whole editor
           // (that would collapse sections and reset scroll/focus).
@@ -2963,7 +3412,7 @@ class PipupNotifyCardEditor extends HTMLElement {
         const label = this.querySelector(`#${id}-value`);
         if (key === 'default_transparency') {
           const idx = parseInt(el.value) || 0;
-          const opt = TRANSPARENCY_OPTIONS[idx] || TRANSPARENCY_OPTIONS[4];
+          const opt = TRANSPARENCY_OPTIONS[idx] || TRANSPARENCY_OPTIONS[1];
           newVal = opt.value;
           if (label) label.textContent = opt.label;
         } else if (key === 'card_glow_intensity') {
@@ -2982,6 +3431,66 @@ class PipupNotifyCardEditor extends HTMLElement {
     this.querySelectorAll('.ed-card-border-side').forEach(el => {
       el.addEventListener('change', () => {
         this._fire({ ...this._config, [`card_border_${el.dataset.side}`]: el.checked });
+      });
+    });
+
+    // Per-device power-entity override selects.
+    this.querySelectorAll('.ed-power-entity').forEach(el => {
+      el.addEventListener('change', () => {
+        const map = { ...(this._config.power_entities || {}) };
+        if (el.value) {
+          map[el.dataset.entity] = el.value;
+        } else {
+          delete map[el.dataset.entity]; // empty => back to PiPup Screen (auto)
+        }
+        this._fire({ ...this._config, power_entities: map });
+      });
+    });
+
+    // Domain filter checkboxes re-populate that device's dropdown in place (no
+    // config write / re-render). If the current selection is filtered out it stays
+    // selected until the user picks another value.
+    this.querySelectorAll('.ed-power-domain').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const entity = cb.dataset.entity;
+        const allowed = [...this.querySelectorAll(`.ed-power-domain[data-entity="${entity}"]:checked`)]
+          .map(el => el.dataset.domain);
+        const select = this.querySelector(`.ed-power-entity[data-entity="${entity}"]`);
+        if (select) select.innerHTML = this._powerSelectOptionsHtml(entity, allowed);
+      });
+    });
+
+    // Per-device "turn on when sending" default (persisted to config).
+    this.querySelectorAll('.ed-power-autoon').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const map = { ...(this._config.power_on_when_sending || {}) };
+        if (cb.checked) map[cb.dataset.entity] = true;
+        else delete map[cb.dataset.entity];
+        this._fire({ ...this._config, power_on_when_sending: map });
+      });
+    });
+
+    // "Turn Off After Send" default toggle — also shows/hides its delay row in place.
+    this.querySelectorAll('.ed-power-autooff').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const map = { ...(this._config.power_off_after_send || {}) };
+        if (cb.checked) map[cb.dataset.entity] = true;
+        else delete map[cb.dataset.entity];
+        const row = this.querySelector(`[data-offdelay-row="${cb.dataset.entity}"]`);
+        if (row) row.style.display = cb.checked ? 'flex' : 'none';
+        this._fire({ ...this._config, power_off_after_send: map });
+      });
+    });
+
+    // Off-delay default slider (seconds after the notification duration).
+    this.querySelectorAll('.ed-power-offdelay').forEach(sl => {
+      sl.addEventListener('input', () => {
+        const v = parseInt(sl.value) || 0;
+        const map = { ...(this._config.power_off_delay || {}) };
+        if (v) map[sl.dataset.entity] = v; else delete map[sl.dataset.entity];
+        const valEl = this.querySelector(`[data-offdelay-val="${sl.dataset.entity}"]`);
+        if (valEl) valEl.textContent = `${v}s`;
+        this._fire({ ...this._config, power_off_delay: map });
       });
     });
 
