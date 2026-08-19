@@ -101,3 +101,5 @@ Build number format: `v<year>.<month>.<day>.<increment>` — the trailing increm
 - Card: **LTek** — [github.com/Ltek/pipup-notify-card](https://github.com/Ltek/pipup-notify-card)
 - PiPup integration & Android app (fork): **[@mhoogenbosch](https://github.com/mhoogenbosch)** — [ha-pipup](https://github.com/mhoogenbosch/ha-pipup) · [PiPup APK](https://github.com/mhoogenbosch/PiPup/releases)
 - Original PiPup app: rundfunk / PiPup project.
+
+<img width="400" alt="image" src="https://github.com/user-attachments/assets/bec1e5ee-5546-47de-a466-58bdf9f19573" />
