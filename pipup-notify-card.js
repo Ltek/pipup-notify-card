@@ -1,11 +1,11 @@
-// pipup-notify-card.js
+// ============================================================================
 // PiPup Notification Card for Home Assistant
 //
-// A Lovelace custom card to compose and send rich PiPup notifications to Android
+// A custom dashboard card to compose and send rich PiPup notifications to Android
 // TV / Fire TV, manage notification profiles, and power TVs on/off.
 //
 // Author:  LTek
-// Card:    https://github.com/Ltek/pipup-notify-card
+// Card:    https://github.com/Ltek/pipup-notify-card   (this project)
 //
 // REQUIREMENTS (both by @mhoogenbosch — this card targets that PiPup fork):
 //   1. Home Assistant "PiPup" integration (provides the pipup.show action and the
@@ -24,7 +24,7 @@
 // BUILD NUMBER — update on every revision. Format: v<year>.<month>.<day>.<increment>
 // The increment is a monotonic version counter — it ALWAYS goes up, never resets
 // (even on a new day). Bump date to today AND increment by one each revision.
-const BUILD_NUMBER = 'v2026.08.19.54';
+const BUILD_NUMBER = 'v2026.08.22.55';
 // ============================================================================
 
 // Shared configuration definitions
@@ -562,6 +562,9 @@ class PipupNotifyCard extends HTMLElement {
       this._notificationTitle = this._config.notification_title || 'Home Assistant';
       this._titleColor = this._config.title_color || '#FFFFFF';
       this._mediaWidth = this._config.default_media_width || 480;
+      this._borderColor = this._config.border_color || '#2196F3';
+      this._borderWidth = this._config.border_width !== undefined ? this._config.border_width : 0;
+      this._cornerRadius = this._config.corner_radius !== undefined ? this._config.corner_radius : 18;
       this._powerOnWhenSending = { ...(this._config.power_on_when_sending || {}) };
       this._powerOffAfterSend = { ...(this._config.power_off_after_send || {}) };
       this._powerOffDelay = { ...(this._config.power_off_delay || {}) };
@@ -833,6 +836,18 @@ class PipupNotifyCard extends HTMLElement {
       title_color: titleColor,
       show_progress: showProgress
     };
+
+    // Border styling (app >= 0.7.0). Only send when a border width is set (>0), so
+    // notifications keep the app/urgency default border unless the user opts in.
+    const borderWidth = this._borderWidth !== undefined ? this._borderWidth : this._config.border_width;
+    if (Number(borderWidth) > 0) {
+      data.border_width = Number(borderWidth);
+      data.border_color = this._borderColor || this._config.border_color || '#2196F3';
+    }
+    const cornerRadius = this._cornerRadius !== undefined ? this._cornerRadius : this._config.corner_radius;
+    if (cornerRadius !== undefined && cornerRadius !== null && cornerRadius !== '') {
+      data.corner_radius = Number(cornerRadius);
+    }
 
     // Media: video/image/web URLs use their own field names in this integration.
     if (videoUri) {
@@ -1869,6 +1884,28 @@ class PipupNotifyCard extends HTMLElement {
       </div>
     `;
 
+    // Border + corner styling (PiPup app >= 0.7.0). Border only sends when width > 0.
+    const bWidth = this._borderWidth !== undefined ? this._borderWidth : (this._config.border_width || 0);
+    const bColor = this._borderColor || this._config.border_color || '#2196F3';
+    const cRadius = this._cornerRadius !== undefined ? this._cornerRadius : (this._config.corner_radius !== undefined ? this._config.corner_radius : 18);
+    if (showAdvancedSettings) html += `
+      <div class="pipup-transparency-row">
+        <label>Border Width</label>
+        <input type="range" id="pipup-border-width" min="0" max="64" step="1" value="${Number(bWidth) || 0}">
+        <span class="transparency-value" id="pipup-border-width-value">${Number(bWidth) || 0}px</span>
+      </div>
+      <div class="pipup-color-picker-row">
+        <label>Border Color</label>
+        <input type="color" id="pipup-border-color" value="${bColor}">
+        <span style="font-size:12px;color:var(--secondary-text-color, #808080);">Border width 0 = off</span>
+      </div>
+      <div class="pipup-transparency-row">
+        <label>Corner Radius</label>
+        <input type="range" id="pipup-corner-radius" min="0" max="128" step="1" value="${Number(cRadius) || 0}">
+        <span class="transparency-value" id="pipup-corner-radius-value">${Number(cRadius) || 0}px</span>
+      </div>
+    `;
+
     if (showAdvancedSettings) html += `
       <div class="pipup-toggle-row">
         <label>
@@ -1979,6 +2016,11 @@ class PipupNotifyCard extends HTMLElement {
     const titleColorPicker = this.querySelector('#pipup-title-color');
     const mediaWidthSlider = this.querySelector('#pipup-media-width');
     const mediaWidthValue = this.querySelector('#pipup-media-width-value');
+    const borderWidthSlider = this.querySelector('#pipup-border-width');
+    const borderWidthValue = this.querySelector('#pipup-border-width-value');
+    const borderColorPicker = this.querySelector('#pipup-border-color');
+    const cornerRadiusSlider = this.querySelector('#pipup-corner-radius');
+    const cornerRadiusValue = this.querySelector('#pipup-corner-radius-value');
     const colorPicker = this.querySelector('#pipup-color');
     const transparencySlider = this.querySelector('#pipup-transparency');
     const transparencyValue = this.querySelector('#pipup-transparency-value');
@@ -2194,6 +2236,24 @@ class PipupNotifyCard extends HTMLElement {
       };
     }
 
+    if (borderWidthSlider && borderWidthValue) {
+      borderWidthSlider.oninput = () => {
+        this._borderWidth = parseInt(borderWidthSlider.value) || 0;
+        borderWidthValue.textContent = `${this._borderWidth}px`;
+      };
+    }
+
+    if (borderColorPicker) {
+      borderColorPicker.oninput = () => { this._borderColor = borderColorPicker.value; };
+    }
+
+    if (cornerRadiusSlider && cornerRadiusValue) {
+      cornerRadiusSlider.oninput = () => {
+        this._cornerRadius = parseInt(cornerRadiusSlider.value) || 0;
+        cornerRadiusValue.textContent = `${this._cornerRadius}px`;
+      };
+    }
+
     if (colorPicker) {
       colorPicker.oninput = () => {
         // Preserve the current transparency (alpha) byte while updating the RGB.
@@ -2242,6 +2302,9 @@ class PipupNotifyCard extends HTMLElement {
         if (notifTitleInput) this._notificationTitle = notifTitleInput.value;
         if (titleColorPicker) this._titleColor = titleColorPicker.value;
         if (mediaWidthSlider) this._mediaWidth = parseInt(mediaWidthSlider.value) || 0;
+        if (borderWidthSlider) this._borderWidth = parseInt(borderWidthSlider.value) || 0;
+        if (borderColorPicker) this._borderColor = borderColorPicker.value;
+        if (cornerRadiusSlider) this._cornerRadius = parseInt(cornerRadiusSlider.value) || 0;
         if (colorPicker) {
           this._backgroundColor = hexToCcColor(colorPicker.value, this._transparency);
         }
@@ -2994,11 +3057,26 @@ class PipupNotifyCardEditor extends HTMLElement {
         <input type="color" id="editor-title-color" value="${cfg.title_color || '#FFFFFF'}">
       </div>
       <div class="pip-row">
+        <label class="lbl">Border Width</label>
+        <input type="range" id="editor-border-width" min="0" max="64" step="1" value="${Number(cfg.border_width) || 0}">
+        <span class="pip-val" id="editor-border-width-value">${Number(cfg.border_width) || 0}px</span>
+      </div>
+      <div class="pip-row">
+        <label class="lbl">Border Color</label>
+        <input type="color" id="editor-border-color" value="${cfg.border_color || '#2196F3'}">
+        <span class="pip-hint">Border width 0 = no border (app ≥ 0.7.0)</span>
+      </div>
+      <div class="pip-row">
+        <label class="lbl">Corner Radius</label>
+        <input type="range" id="editor-corner-radius" min="0" max="128" step="1" value="${Number(cfg.corner_radius) !== undefined ? (Number(cfg.corner_radius) || 0) : 18}">
+        <span class="pip-val" id="editor-corner-radius-value">${Number(cfg.corner_radius) || 0}px</span>
+      </div>
+      <div class="pip-row">
         <label class="lbl">Urgency</label>
         <select id="editor-default-urgency">
           ${URGENCY_OPTIONS.map(opt => `<option value="${opt.value}" ${(cfg.default_urgency || '') === opt.value ? 'selected' : ''}>${opt.label}</option>`).join('')}
         </select>
-        <span class="pip-hint">Default colored border preset (also selectable on the Live Card)</span>
+        <span class="pip-hint">Colored border preset (Info/Warning/Critical)</span>
       </div>
     `;
 
@@ -3316,6 +3394,7 @@ class PipupNotifyCardEditor extends HTMLElement {
       { id: 'editor-default-position', key: 'default_position', numeric: true },
       { id: 'editor-default-color', key: 'default_background_color', bg: true },
       { id: 'editor-title-color', key: 'title_color' },
+      { id: 'editor-border-color', key: 'border_color' },
       { id: 'editor-default-urgency', key: 'default_urgency' },
       { id: 'editor-button1-label', key: 'button1_label' },
       { id: 'editor-button1-id', key: 'button1_id' },
@@ -3394,6 +3473,7 @@ class PipupNotifyCardEditor extends HTMLElement {
       { id: 'editor-default-duration', key: 'default_duration' },
       { id: 'editor-default-transparency', key: 'default_transparency' },
       { id: 'editor-corner-radius', key: 'corner_radius' },
+      { id: 'editor-border-width', key: 'border_width' },
       { id: 'editor-card-border-width', key: 'card_border_width' },
       { id: 'editor-card-border-radius', key: 'card_border_radius' },
       { id: 'editor-card-glow-intensity', key: 'card_glow_intensity' },
