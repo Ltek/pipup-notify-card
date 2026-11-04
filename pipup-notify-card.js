@@ -24,7 +24,7 @@
 // BUILD NUMBER — update on every revision. Format: v<year>.<month>.<day>.<increment>
 // The increment is a monotonic version counter — it ALWAYS goes up, never resets
 // (even on a new day). Bump date to today AND increment by one each revision.
-const BUILD_NUMBER = 'v2026.11.04.59';
+const BUILD_NUMBER = 'v2026.11.04.61';
 // ============================================================================
 
 // Shared configuration definitions
@@ -434,8 +434,8 @@ class PipupNotifyCard extends HTMLElement {
     this._cardIcon = 'mdi:bell-outline';
     this._notificationTitleEmoji = '';
     this._cardCollapsed = false;
-    // Which Target-TV rows are expanded (to show Power On/Off). Persists across
-    // re-renders within a session.
+    // Which Target-TV rows are expanded (to show the power toggle + options).
+    // Persists across re-renders within a session.
     this._expandedTvs = new Set();
     // Runtime per-device "turn on when sending" state (seeded from config).
     this._powerOnWhenSending = {};
@@ -903,6 +903,35 @@ class PipupNotifyCard extends HTMLElement {
         console.error('[PiPup] Update install error for ' + info.entityId + ':', err);
         this.showError(`⚠️ Failed to update ${name}: ${err.message || 'error'}`);
       });
+  }
+
+  // Inner HTML for a Target-TV row's app-version line. Returns '' when neither the
+  // version display nor the update button is enabled (or there's nothing to show),
+  // so the caller can omit the wrapper. The small "Update" pill IS the action —
+  // there is no separate large button. Used by both renderCard() and updateStates().
+  _appVersionInnerHtml(entityId, showAppVersion, showUpdateButton) {
+    if (!showAppVersion && !showUpdateButton) return '';
+    const info = this._getUpdateInfo(entityId);
+    if (!info) {
+      return showAppVersion
+        ? '<span class="pip-hint">App version unavailable (needs PiPup app ≥ 0.6.0).</span>'
+        : '';
+    }
+    const pill = `<button class="pipup-update-btn has-update" data-entity="${entityId}" ${info.inProgress ? 'disabled' : ''} title="${info.inProgress ? 'Update in progress' : `Update to ${info.latest || 'latest'}`}"><ha-icon icon="mdi:download" style="--mdc-icon-size:12px;vertical-align:middle;"></ha-icon> ${info.inProgress ? 'Updating…' : 'Update'}</button>`;
+    let availHtml;
+    if (info.updateAvailable && info.latest) {
+      availHtml = `<span class="pipup-ver-sep">→</span><span class="pipup-ver-latest" title="Available version">${this._escapeHtml(info.latest)}</span>`;
+      availHtml += showUpdateButton ? pill : '<span class="pipup-ver-badge">update</span>';
+    } else {
+      availHtml = '<span class="pipup-ver-ok" title="Up to date"><ha-icon icon="mdi:check-circle" style="--mdc-icon-size:12px;vertical-align:middle;"></ha-icon> up to date</span>';
+    }
+    if (showAppVersion) {
+      return `<span class="pipup-ver-label"><ha-icon icon="mdi:cellphone-arrow-down" style="--mdc-icon-size:13px;vertical-align:middle;"></ha-icon> App</span>`
+        + `<span class="pipup-ver-installed" title="Installed version">${this._escapeHtml(info.installed || 'unknown')}</span>`
+        + availHtml;
+    }
+    // Version hidden, button shown: only surface the pill when there's an update.
+    return (showUpdateButton && info.updateAvailable && info.latest) ? pill : '';
   }
 
   _getFriendlyName(entityId) {
@@ -1606,8 +1635,13 @@ class PipupNotifyCard extends HTMLElement {
       .pipup-device-item {
         display: flex;
         flex-direction: column;
-        border-radius: 4px;
-        transition: background 0.2s;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        transition: background 0.2s, border-color 0.2s;
+      }
+      /* Expanded row gets an accent-color outline, matching the editor's settings panels. */
+      .pipup-device-item.expanded {
+        border-color: var(--accent-color, #2196F3);
       }
       .pipup-device-head {
         display: flex;
@@ -1698,11 +1732,9 @@ class PipupNotifyCard extends HTMLElement {
       }
       .pipup-power-btn:hover:not(:disabled) { filter: brightness(1.2); }
       .pipup-power-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-      .pipup-power-btn.on.active {
+      /* TV currently on -> the toggle reads "Turn Off" and is tinted green. */
+      .pipup-power-btn.active {
         background: #4CAF50; border-color: #4CAF50; color: #fff;
-      }
-      .pipup-power-btn.off.active {
-        background: #555; border-color: #555; color: #fff;
       }
       .pipup-app-version {
         display: flex;
@@ -1731,21 +1763,24 @@ class PipupNotifyCard extends HTMLElement {
       }
       .pipup-ver-ok { color: #4CAF50; }
       .pipup-update-btn {
-        margin-left: auto;
-        padding: 4px 14px;
-        border: 1px solid var(--divider-color, #444);
-        border-radius: 6px;
-        background: var(--secondary-background-color, #2a2a2a);
-        color: var(--primary-text-color, #e1e1e1);
-        font-size: 13px;
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 1px 8px;
+        border: none;
+        border-radius: 4px;
+        background: #4CAF50;
+        color: #fff;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        line-height: 1.6;
         cursor: pointer;
-        transition: all 0.15s;
+        transition: filter 0.15s;
       }
-      .pipup-update-btn:hover:not(:disabled) { filter: brightness(1.2); }
-      .pipup-update-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-      .pipup-update-btn.has-update {
-        background: #4CAF50; border-color: #4CAF50; color: #fff;
-      }
+      .pipup-update-btn:hover:not(:disabled) { filter: brightness(1.15); }
+      .pipup-update-btn:disabled { opacity: 0.6; cursor: not-allowed; }
       .pipup-power-autoon {
         display: flex;
         align-items: center;
@@ -1993,32 +2028,19 @@ class PipupNotifyCard extends HTMLElement {
                 <ha-icon class="pipup-device-chevron${expanded ? ' expanded' : ''}" icon="mdi:chevron-down"></ha-icon>
               </div>
               <div class="pipup-device-body" style="display:${expanded ? 'flex' : 'none'};">
-                <button class="pipup-power-btn on ${powerOn ? 'active' : ''}" data-entity="${entity.entity_id}" data-power="on" ${powerEntity ? '' : 'disabled'}><ha-icon icon="mdi:power" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> Power On</button>
-                <button class="pipup-power-btn off ${powerState === 'off' ? 'active' : ''}" data-entity="${entity.entity_id}" data-power="off" ${powerEntity ? '' : 'disabled'}><ha-icon icon="mdi:power-off" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> Power Off</button>
+                ${(() => {
+                  // Single Power toggle. Clicking flips the current state; an unknown
+                  // state defaults to turning on. The header Power chip shows the state,
+                  // so the button only needs to offer the action.
+                  const turnOn = powerState !== 'on'; // unknown -> turn on
+                  const label = powerState === 'on' ? 'Turn Off' : (powerState === 'off' ? 'Turn On' : 'Turn On');
+                  const icon = turnOn ? 'mdi:power' : 'mdi:power-off';
+                  return `<button class="pipup-power-btn ${powerOn ? 'active' : ''}" data-entity="${entity.entity_id}" data-turn-on="${turnOn ? '1' : '0'}" ${powerEntity ? '' : 'disabled'}><ha-icon icon="${icon}" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> ${label}</button>`;
+                })()}
                 ${powerEntity ? '' : '<span class="pip-hint" style="align-self:center;">No power entity — set one in the editor.</span>'}
                 ${(() => {
-                  if (!showAppVersion && !showUpdateButton) return '';
-                  const info = this._getUpdateInfo(entity.entity_id);
-                  if (!info) {
-                    return showAppVersion
-                      ? '<div class="pipup-app-version" style="width:100%;"><span class="pip-hint">App version unavailable (needs PiPup app ≥ 0.6.0).</span></div>'
-                      : '';
-                  }
-                  const installed = info.installed || 'unknown';
-                  let versionHtml = '';
-                  if (showAppVersion) {
-                    const availHtml = info.updateAvailable && info.latest
-                      ? `<span class="pipup-ver-sep">→</span><span class="pipup-ver-latest" title="Available version">${this._escapeHtml(info.latest)}</span><span class="pipup-ver-badge">update</span>`
-                      : '<span class="pipup-ver-ok" title="Up to date"><ha-icon icon="mdi:check-circle" style="--mdc-icon-size:12px;vertical-align:middle;"></ha-icon> up to date</span>';
-                    versionHtml = `
-                      <span class="pipup-ver-label"><ha-icon icon="mdi:cellphone-arrow-down" style="--mdc-icon-size:13px;vertical-align:middle;"></ha-icon> App</span>
-                      <span class="pipup-ver-installed" title="Installed version">${this._escapeHtml(installed)}</span>
-                      ${availHtml}`;
-                  }
-                  const btnHtml = showUpdateButton
-                    ? `<button class="pipup-update-btn${info.updateAvailable ? ' has-update' : ''}" data-entity="${entity.entity_id}" ${info.updateAvailable && !info.inProgress ? '' : 'disabled'} title="${info.inProgress ? 'Update in progress' : (info.updateAvailable ? `Update to ${info.latest || 'latest'}` : 'Already up to date')}"><ha-icon icon="mdi:download" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> ${info.inProgress ? 'Updating…' : 'Update'}</button>`
-                    : '';
-                  return `<div class="pipup-app-version">${versionHtml}${btnHtml}</div>`;
+                  const inner = this._appVersionInnerHtml(entity.entity_id, showAppVersion, showUpdateButton);
+                  return inner ? `<div class="pipup-app-version">${inner}</div>` : '';
                 })()}
                 <label class="pipup-power-autoon" title="When you send a notification, turn this TV on first if it's currently off">
                   <input type="checkbox" class="pipup-autoon-check" data-entity="${entity.entity_id}" ${this._powerOnWhenSending?.[entity.entity_id] ? 'checked' : ''} ${powerEntity ? '' : 'disabled'}>
@@ -2395,11 +2417,12 @@ class PipupNotifyCard extends HTMLElement {
       };
     });
 
-    // Per-device power on/off buttons (resolved power entity).
+    // Per-device power toggle (resolved power entity). data-turn-on carries the
+    // direction the current state implies (unknown -> turn on).
     this.querySelectorAll('.pipup-power-btn').forEach(btn => {
       btn.onclick = () => {
         if (btn.disabled) return;
-        this._setDevicePower(btn.dataset.entity, btn.dataset.power === 'on');
+        this._setDevicePower(btn.dataset.entity, btn.dataset.turnOn === '1');
       };
     });
 
@@ -2446,7 +2469,7 @@ class PipupNotifyCard extends HTMLElement {
     });
 
     // Expand/collapse each Target-TV row (clicking the head, but not the checkbox)
-    // to reveal its Power On/Off buttons.
+    // to reveal its power toggle, app version and per-TV options.
     this.querySelectorAll('.pipup-device-item').forEach(item => {
       const head = item.querySelector('.pipup-device-head');
       const bodyEl = item.querySelector('.pipup-device-body');
@@ -2705,26 +2728,31 @@ class PipupNotifyCard extends HTMLElement {
         powerChip.className = `device-status ${powerClass}`;
         powerChip.innerHTML = `<ha-icon icon="mdi:power" style="--mdc-icon-size:11px;vertical-align:middle;"></ha-icon> ${powerText}`;
       }
-      const onBtn = item.querySelector('.pipup-power-btn.on');
-      const offBtn = item.querySelector('.pipup-power-btn.off');
-      if (onBtn) onBtn.classList.toggle('active', powerState === 'on');
-      if (offBtn) offBtn.classList.toggle('active', powerState === 'off');
+      // Power toggle: reflect the new state in its label, icon and direction.
+      const powerBtn = item.querySelector('.pipup-power-btn');
+      if (powerBtn) {
+        const turnOn = powerState !== 'on'; // unknown -> turn on
+        const label = powerState === 'on' ? 'Turn Off' : 'Turn On';
+        const icon = turnOn ? 'mdi:power' : 'mdi:power-off';
+        powerBtn.dataset.turnOn = turnOn ? '1' : '0';
+        powerBtn.classList.toggle('active', powerState === 'on');
+        powerBtn.innerHTML = `<ha-icon icon="${icon}" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> ${label}`;
+      }
 
-      // App version chips + Update button, tracking the update.pipup_*_app entity.
+      // App version line + Update pill, tracking the update.pipup_*_app entity. The
+      // whole slot can change shape (update-available ⇄ up-to-date), so re-render its
+      // inner HTML from the shared helper and re-wire the pill's click.
       const verWrap = item.querySelector('.pipup-app-version');
       if (verWrap) {
-        const info = this._getUpdateInfo(entityId);
-        const installedEl = verWrap.querySelector('.pipup-ver-installed');
-        if (installedEl && info) installedEl.textContent = info.installed || 'unknown';
-        const updBtn = verWrap.querySelector('.pipup-update-btn');
-        if (updBtn && info) {
-          const canUpdate = info.updateAvailable && !info.inProgress;
-          updBtn.disabled = !canUpdate;
-          updBtn.classList.toggle('has-update', !!info.updateAvailable);
-          updBtn.innerHTML = `<ha-icon icon="mdi:download" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> ${info.inProgress ? 'Updating…' : 'Update'}`;
-          updBtn.title = info.inProgress ? 'Update in progress'
-            : (info.updateAvailable ? `Update to ${info.latest || 'latest'}` : 'Already up to date');
-        }
+        const showAppVersion = this._config.show_app_version !== false;
+        const showUpdateButton = this._config.show_update_button !== false;
+        verWrap.innerHTML = this._appVersionInnerHtml(entityId, showAppVersion, showUpdateButton);
+        const pill = verWrap.querySelector('.pipup-update-btn');
+        if (pill) pill.onclick = (e) => {
+          e.stopPropagation();
+          if (pill.disabled) return;
+          this._installAppUpdate(pill.dataset.entity);
+        };
       }
     });
 

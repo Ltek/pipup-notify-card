@@ -60,7 +60,7 @@ Then add the card to a dashboard: **Add Card → PiPup Notify Card (Ltek)** (or 
   - a checkbox to include it as a send target,
   - a **Power** chip (green On / yellow Off / grey Unknown),
   - a connectivity **Online/Offline** chip (red = offline/problem),
-  - an expander that reveals per-device **Power On / Power Off** buttons, power automation options, and the **installed vs. available app version** with an optional **Update** button.
+  - an expander that reveals a per-device **Power** toggle, power automation options, and the **installed vs. available app version** with an optional **Update** button; the expanded row is outlined in the theme's accent color.
 - **Advanced Settings** (collapsible) — Notification Title, Message, Display Time, Position, Urgency, background Color + Transparency, Title Color, Show progress / Speak aloud (TTS) / Dismissible, Action Buttons, Image/Video URL, Media Width.
 - **Profiles** dropdown to instantly load a saved preset.
 - **Jinja templates** supported in the Message field for live sensor data.
