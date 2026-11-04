@@ -1,7 +1,7 @@
-// ============================================================================
+// pipup-notify-card.js
 // PiPup Notification Card for Home Assistant
 //
-// A custom dashboard card to compose and send rich PiPup notifications to Android
+// A Lovelace custom card to compose and send rich PiPup notifications to Android
 // TV / Fire TV, manage notification profiles, and power TVs on/off.
 //
 // Author:  LTek
@@ -24,7 +24,7 @@
 // BUILD NUMBER — update on every revision. Format: v<year>.<month>.<day>.<increment>
 // The increment is a monotonic version counter — it ALWAYS goes up, never resets
 // (even on a new day). Bump date to today AND increment by one each revision.
-const BUILD_NUMBER = 'v2026.08.22.55';
+const BUILD_NUMBER = 'v2026.11.04.58';
 // ============================================================================
 
 // Shared configuration definitions
@@ -33,7 +33,12 @@ const POSITIONS = {
   1: { label: 'Top-Left', icon: 'mdi:arrow-top-left' },
   2: { label: 'Bottom-Right', icon: 'mdi:arrow-bottom-right' },
   3: { label: 'Bottom-Left', icon: 'mdi:arrow-bottom-left' },
-  4: { label: 'Center', icon: 'mdi:arrow-expand' }
+  4: { label: 'Center', icon: 'mdi:arrow-expand' },
+  // Remaining cells of the 3×3 grid (PiPup app >= 0.26.0 for center_left/right).
+  5: { label: 'Top-Center', icon: 'mdi:arrow-up' },
+  6: { label: 'Bottom-Center', icon: 'mdi:arrow-down' },
+  7: { label: 'Center-Left', icon: 'mdi:arrow-left' },
+  8: { label: 'Center-Right', icon: 'mdi:arrow-right' }
 };
 
 // The pipup.show `position` field takes a string key, not the legacy integer.
@@ -42,7 +47,11 @@ const POSITION_KEYS = {
   1: 'top_left',
   2: 'bottom_right',
   3: 'bottom_left',
-  4: 'center'
+  4: 'center',
+  5: 'top_center',
+  6: 'bottom_center',
+  7: 'center_left',
+  8: 'center_right'
 };
 
 const POSITIONS_LIST = Object.entries(POSITIONS).map(([value, data]) => ({
@@ -94,6 +103,13 @@ const ANIMATION_TYPES = [
   { value: 'scale', label: 'Scale' }
 ];
 
+// pipup.show `stack` — how simultaneous popups arrange (app >= 0.27.0).
+const STACK_OPTIONS = [
+  { value: 'none', label: 'Overlap (default)' },
+  { value: 'vertical', label: 'Stack vertically' },
+  { value: 'horizontal', label: 'Stack horizontally' }
+];
+
 // pipup.show `urgency` — colored border presets applied on the TV.
 const URGENCY_OPTIONS = [
   { value: '', label: 'None' },
@@ -106,6 +122,10 @@ let DEBUG = false;
 
 // Profile storage key
 const PROFILE_STORAGE_KEY = 'pipup_notify_profiles';
+
+// Prefix for caching a Live Card's ad-hoc (in-card) settings so they survive a
+// reload. Keyed per card instance so multiple cards don't collide.
+const ADHOC_STORAGE_PREFIX = 'pipup_notify_adhoc_';
 
 // The built-in profile. It can be edited and selected, but never deleted.
 const DEFAULT_PROFILE_NAME = 'Default';
@@ -295,6 +315,10 @@ class PipupNotifyCard extends HTMLElement {
       default_animation_duration: 250,
       // Urgency: '', 'info', 'warning', or 'critical' colored border preset.
       default_urgency: '',
+      // Popup stacking (app >= 0.27.0): 'none' overlaps, 'vertical'/'horizontal' line up.
+      default_stack: 'none',
+      // Full-screen popup covering the whole display (app >= 0.29.1).
+      default_fullscreen: false,
       // Card visual settings
       // card_bg_mode: 'theme' (HA theme default), 'transparent', or 'custom' (card_bg_color).
       card_bg_mode: 'theme',
@@ -347,6 +371,12 @@ class PipupNotifyCard extends HTMLElement {
       show_advanced_settings: true,
       show_message: true,
       show_selected_tvs: true,
+      // Show the installed / available PiPup app version inside each expanded
+      // Target-TV row (resolved from the integration's update.pipup_*_app entity).
+      show_app_version: true,
+      // Show a per-TV "Update" button in the expanded row to push the available
+      // app update (calls update.install on that TV's update entity).
+      show_update_button: true,
       // Per-device power control entity override. Map of pipup notify entity_id ->
       // an entity_id in the switch/remote/media_player domain used for On/Off.
       // Empty/absent for a device => use the built-in PiPup Screen switch.
@@ -385,6 +415,8 @@ class PipupNotifyCard extends HTMLElement {
     this._interrupt = true;
     this._showProgress = true;
     this._urgency = '';
+    this._stack = 'none';
+    this._fullscreen = false;
     this._notificationTitle = '';
     this._titleColor = '#FFFFFF';
     this._mediaWidth = 480;
@@ -427,6 +459,94 @@ class PipupNotifyCard extends HTMLElement {
     }
   }
 
+  // Stable per-card key for caching ad-hoc Live Card settings in localStorage.
+  // Uses card_title (+ first target device) so multiple cards on a dashboard cache
+  // independently and survive reloads.
+  _adhocKey() {
+    const base = (this._config && (this._config.card_title || '')) + '|' +
+      ((this._config && this._config.selected_devices && this._config.selected_devices[0]) || '');
+    return ADHOC_STORAGE_PREFIX + base;
+  }
+
+  // The set of ad-hoc (in-card) fields that persist across reloads.
+  _adhocSnapshot() {
+    return {
+      message: this._message,
+      imageUri: this._imageUri,
+      videoUri: this._videoUri,
+      duration: this._duration,
+      position: this._position,
+      backgroundColor: this._backgroundColor,
+      transparency: this._transparency,
+      titleColor: this._titleColor,
+      borderColor: this._borderColor,
+      borderWidth: this._borderWidth,
+      cornerRadius: this._cornerRadius,
+      mediaWidth: this._mediaWidth,
+      notificationTitle: this._notificationTitle,
+      urgency: this._urgency,
+      stack: this._stack,
+      fullscreen: this._fullscreen,
+      tts: this._tts,
+      interrupt: this._interrupt,
+      showProgress: this._showProgress,
+      button1Enabled: this._button1Enabled, button1Label: this._button1Label, button1Id: this._button1Id,
+      button2Enabled: this._button2Enabled, button2Label: this._button2Label, button2Id: this._button2Id,
+      button3Enabled: this._button3Enabled, button3Label: this._button3Label, button3Id: this._button3Id,
+      powerOnWhenSending: this._powerOnWhenSending,
+      powerOffAfterSend: this._powerOffAfterSend,
+      powerOffDelay: this._powerOffDelay
+    };
+  }
+
+  // Persist the current ad-hoc settings. Called whenever the user changes an
+  // in-card control so the choice survives a page reload.
+  _saveAdhoc() {
+    if (!this._config) return;
+    try {
+      localStorage.setItem(this._adhocKey(), JSON.stringify(this._adhocSnapshot()));
+    } catch (e) { /* storage full / disabled — non-fatal */ }
+  }
+
+  // Apply a cached ad-hoc snapshot over the config-seeded defaults (only keys that
+  // were actually cached; undefined keys leave the seeded default in place).
+  _loadAdhoc() {
+    let data = null;
+    try {
+      const raw = localStorage.getItem(this._adhocKey());
+      data = raw ? JSON.parse(raw) : null;
+    } catch (e) { data = null; }
+    if (!data || typeof data !== 'object') return;
+    const set = (k, v) => { if (v !== undefined) this[k] = v; };
+    set('_message', data.message);
+    set('_imageUri', data.imageUri);
+    set('_videoUri', data.videoUri);
+    set('_duration', data.duration);
+    set('_position', data.position);
+    set('_backgroundColor', data.backgroundColor);
+    set('_transparency', data.transparency);
+    set('_titleColor', data.titleColor);
+    set('_borderColor', data.borderColor);
+    set('_borderWidth', data.borderWidth);
+    set('_cornerRadius', data.cornerRadius);
+    set('_mediaWidth', data.mediaWidth);
+    set('_notificationTitle', data.notificationTitle);
+    set('_urgency', data.urgency);
+    set('_stack', data.stack);
+    set('_fullscreen', data.fullscreen);
+    set('_tts', data.tts);
+    set('_interrupt', data.interrupt);
+    set('_showProgress', data.showProgress);
+    set('_button1Enabled', data.button1Enabled); set('_button1Label', data.button1Label); set('_button1Id', data.button1Id);
+    set('_button2Enabled', data.button2Enabled); set('_button2Label', data.button2Label); set('_button2Id', data.button2Id);
+    set('_button3Enabled', data.button3Enabled); set('_button3Label', data.button3Label); set('_button3Id', data.button3Id);
+    if (data.powerOnWhenSending) this._powerOnWhenSending = data.powerOnWhenSending;
+    if (data.powerOffAfterSend) this._powerOffAfterSend = data.powerOffAfterSend;
+    if (data.powerOffDelay) this._powerOffDelay = data.powerOffDelay;
+    // Keep _defaultMessage aligned with a cached message so renderCard shows it.
+    if (data.message !== undefined) this._defaultMessage = data.message;
+  }
+
   _saveProfile(name) {
     const profile = {
       name: name,
@@ -438,6 +558,8 @@ class PipupNotifyCard extends HTMLElement {
         default_message: this._defaultMessage,
         default_duration: this._duration,
         default_position: this._position,
+        default_stack: this._stack,
+        default_fullscreen: this._fullscreen,
         default_background_color: this._backgroundColor,
         default_transparency: this._transparency,
         tts_enabled: this._tts,
@@ -493,6 +615,8 @@ class PipupNotifyCard extends HTMLElement {
     this._defaultMessage = cfg.default_message || this._config.default_message;
     this._duration = cfg.default_duration || this._config.default_duration;
     this._position = cfg.default_position !== undefined ? cfg.default_position : this._config.default_position;
+    this._stack = cfg.default_stack !== undefined ? cfg.default_stack : (this._config.default_stack || 'none');
+    this._fullscreen = cfg.default_fullscreen !== undefined ? cfg.default_fullscreen : (this._config.default_fullscreen || false);
     this._backgroundColor = cfg.default_background_color || this._config.default_background_color;
     this._transparency = cfg.default_transparency || this._config.default_transparency;
     this._tts = cfg.tts_enabled !== undefined ? cfg.tts_enabled : this._config.tts_enabled;
@@ -559,6 +683,8 @@ class PipupNotifyCard extends HTMLElement {
     // message), so a config round-trip doesn't reset a choice made on the Live Card.
     if (!this._urgencySeeded) {
       this._urgency = this._config.default_urgency || '';
+      this._stack = this._config.default_stack || 'none';
+      this._fullscreen = this._config.default_fullscreen || false;
       this._notificationTitle = this._config.notification_title || 'Home Assistant';
       this._titleColor = this._config.title_color || '#FFFFFF';
       this._mediaWidth = this._config.default_media_width || 480;
@@ -568,6 +694,9 @@ class PipupNotifyCard extends HTMLElement {
       this._powerOnWhenSending = { ...(this._config.power_on_when_sending || {}) };
       this._powerOffAfterSend = { ...(this._config.power_off_after_send || {}) };
       this._powerOffDelay = { ...(this._config.power_off_delay || {}) };
+      // Restore any cached ad-hoc settings on top of the seeded defaults so the
+      // user's last in-card choices survive a reload.
+      this._loadAdhoc();
       this._urgencySeeded = true;
     }
     DEBUG = this._config.debug || false;
@@ -709,6 +838,70 @@ class PipupNotifyCard extends HTMLElement {
       .catch(err => {
         console.error('[PiPup] Power control error for ' + powerEntity + ':', err);
         this.showError(`⚠️ Failed to power ${on ? 'on' : 'off'} ${name}: ${err.message || 'error'}`);
+      });
+  }
+
+  // Locate the per-TV "app" update entity the integration exposes (app >= 0.6.0):
+  // update.pipup_*_app. It checks the fork's GitHub releases and reports the
+  // installed version vs. the latest available, and can self-install. Resolve it
+  // via the shared device_id, with a name-based fallback.
+  _getUpdateEntityId(entityId) {
+    if (!this._hass?.entities) return null;
+    const reg = this._hass.entities[entityId];
+    if (reg && reg.device_id) {
+      const candidates = Object.values(this._hass.entities).filter(e =>
+        e.device_id === reg.device_id && e.entity_id.startsWith('update.')
+      );
+      // Prefer an update entity whose id says "app"; else take the device's only one.
+      const upd = candidates.find(e => e.entity_id.toLowerCase().includes('app'))
+        || (candidates.length === 1 ? candidates[0] : null);
+      if (upd) return upd.entity_id;
+    }
+    // Fallback: derive update.<name>_app from notify.<name>_notification.
+    if (entityId.startsWith('notify.')) {
+      const guess = 'update.' + entityId.slice('notify.'.length).replace(/_notification$/, '') + '_app';
+      if (this._hass?.states?.[guess]) return guess;
+    }
+    return null;
+  }
+
+  // Read installed/latest app versions and whether an update is pending from the
+  // resolved update entity. Returns null if no update entity exists for the TV.
+  _getUpdateInfo(entityId) {
+    const updId = this._getUpdateEntityId(entityId);
+    if (!updId) return null;
+    const st = this._hass?.states?.[updId];
+    if (!st) return null;
+    const a = st.attributes || {};
+    const installed = a.installed_version || null;
+    const latest = a.latest_version || null;
+    // update entities are 'on' when an install is available, 'off' when up to date.
+    const updateAvailable = st.state === 'on'
+      || (!!installed && !!latest && installed !== latest);
+    return {
+      entityId: updId,
+      installed,
+      latest,
+      updateAvailable,
+      inProgress: a.in_progress === true || typeof a.in_progress === 'number',
+    };
+  }
+
+  // Trigger the TV's self-update via the standard update.install service.
+  _installAppUpdate(entityId) {
+    const info = this._getUpdateInfo(entityId);
+    const name = stripName(this._getFriendlyName(entityId), this._config.strip_strings);
+    if (!info) {
+      this.showError(`❌ No update entity for ${name}. Requires PiPup app ≥ 0.6.0.`);
+      return;
+    }
+    if (!this._hass) return;
+    this._logToHA('info', `Install app update -> ${info.entityId} (${info.installed || '?'} → ${info.latest || '?'})`);
+    this._hass.callService('update', 'install', { entity_id: info.entityId })
+      .then(() => this.showSuccess(`✅ ${name}: update to ${info.latest || 'latest'} started.`))
+      .catch(err => {
+        console.error('[PiPup] Update install error for ' + info.entityId + ':', err);
+        this.showError(`⚠️ Failed to update ${name}: ${err.message || 'error'}`);
       });
   }
 
@@ -884,6 +1077,19 @@ class PipupNotifyCard extends HTMLElement {
       data.buttons = buttons;
     }
 
+    // Popup stacking (app >= 0.27.0): line multiple popups up instead of overlapping.
+    // Only send when non-default ('vertical'/'horizontal'); 'none' is the app default.
+    const stack = this._stack !== undefined ? this._stack : this._config.default_stack;
+    if (stack && stack !== 'none') {
+      data.stack = stack;
+    }
+
+    // Full-screen popup (app >= 0.29.1): cover the entire display. Only send when on.
+    const fullscreen = this._fullscreen !== undefined ? this._fullscreen : this._config.default_fullscreen;
+    if (fullscreen) {
+      data.fullscreen = true;
+    }
+
     const selectedDevices = this._selectedDevices.length > 0
       ? this._selectedDevices
       : this._config.selected_devices || [];
@@ -1017,6 +1223,8 @@ class PipupNotifyCard extends HTMLElement {
     const interrupt = this._interrupt !== undefined ? this._interrupt : config.interrupt_enabled;
     const showProgress = this._showProgress !== undefined ? this._showProgress : config.show_progress;
     const urgency = this._urgency !== undefined ? this._urgency : (config.default_urgency || '');
+    const stack = this._stack !== undefined ? this._stack : (config.default_stack || 'none');
+    const fullscreen = this._fullscreen !== undefined ? this._fullscreen : (config.default_fullscreen || false);
     const notifTitle = this._notificationTitle || config.notification_title || 'Home Assistant';
     const titleColor = this._titleColor || config.title_color || '#FFFFFF';
     const mediaWidth = this._mediaWidth || config.default_media_width || 480;
@@ -1026,6 +1234,8 @@ class PipupNotifyCard extends HTMLElement {
     const showAdvancedSettings = config.show_advanced_settings !== false;
     const showMessageRow = config.show_message !== false;
     const showSelectedTvs = config.show_selected_tvs !== false;
+    const showAppVersion = config.show_app_version !== false;
+    const showUpdateButton = config.show_update_button !== false;
 
     const pipupEntities = this._getPipupEntities();
 
@@ -1494,6 +1704,48 @@ class PipupNotifyCard extends HTMLElement {
       .pipup-power-btn.off.active {
         background: #555; border-color: #555; color: #fff;
       }
+      .pipup-app-version {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        width: 100%;
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--secondary-text-color, #808080);
+      }
+      .pipup-ver-label { color: var(--secondary-text-color, #808080); }
+      .pipup-ver-installed {
+        font-family: var(--code-font-family, monospace);
+        color: var(--primary-text-color, #e1e1e1);
+      }
+      .pipup-ver-sep { opacity: 0.6; }
+      .pipup-ver-latest {
+        font-family: var(--code-font-family, monospace);
+        color: #4CAF50; font-weight: 600;
+      }
+      .pipup-ver-badge {
+        font-size: 10px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.5px; color: #fff; background: #4CAF50;
+        border-radius: 4px; padding: 1px 5px;
+      }
+      .pipup-ver-ok { color: #4CAF50; }
+      .pipup-update-btn {
+        margin-left: auto;
+        padding: 4px 14px;
+        border: 1px solid var(--divider-color, #444);
+        border-radius: 6px;
+        background: var(--secondary-background-color, #2a2a2a);
+        color: var(--primary-text-color, #e1e1e1);
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+      .pipup-update-btn:hover:not(:disabled) { filter: brightness(1.2); }
+      .pipup-update-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+      .pipup-update-btn.has-update {
+        background: #4CAF50; border-color: #4CAF50; color: #fff;
+      }
       .pipup-power-autoon {
         display: flex;
         align-items: center;
@@ -1744,6 +1996,30 @@ class PipupNotifyCard extends HTMLElement {
                 <button class="pipup-power-btn on ${powerOn ? 'active' : ''}" data-entity="${entity.entity_id}" data-power="on" ${powerEntity ? '' : 'disabled'}><ha-icon icon="mdi:power" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> Power On</button>
                 <button class="pipup-power-btn off ${powerState === 'off' ? 'active' : ''}" data-entity="${entity.entity_id}" data-power="off" ${powerEntity ? '' : 'disabled'}><ha-icon icon="mdi:power-off" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> Power Off</button>
                 ${powerEntity ? '' : '<span class="pip-hint" style="align-self:center;">No power entity — set one in the editor.</span>'}
+                ${(() => {
+                  if (!showAppVersion && !showUpdateButton) return '';
+                  const info = this._getUpdateInfo(entity.entity_id);
+                  if (!info) {
+                    return showAppVersion
+                      ? '<div class="pipup-app-version" style="width:100%;"><span class="pip-hint">App version unavailable (needs PiPup app ≥ 0.6.0).</span></div>'
+                      : '';
+                  }
+                  const installed = info.installed || 'unknown';
+                  let versionHtml = '';
+                  if (showAppVersion) {
+                    const availHtml = info.updateAvailable && info.latest
+                      ? `<span class="pipup-ver-sep">→</span><span class="pipup-ver-latest" title="Available version">${this._escapeHtml(info.latest)}</span><span class="pipup-ver-badge">update</span>`
+                      : '<span class="pipup-ver-ok" title="Up to date"><ha-icon icon="mdi:check-circle" style="--mdc-icon-size:12px;vertical-align:middle;"></ha-icon> up to date</span>';
+                    versionHtml = `
+                      <span class="pipup-ver-label"><ha-icon icon="mdi:cellphone-arrow-down" style="--mdc-icon-size:13px;vertical-align:middle;"></ha-icon> App</span>
+                      <span class="pipup-ver-installed" title="Installed version">${this._escapeHtml(installed)}</span>
+                      ${availHtml}`;
+                  }
+                  const btnHtml = showUpdateButton
+                    ? `<button class="pipup-update-btn${info.updateAvailable ? ' has-update' : ''}" data-entity="${entity.entity_id}" ${info.updateAvailable && !info.inProgress ? '' : 'disabled'} title="${info.inProgress ? 'Update in progress' : (info.updateAvailable ? `Update to ${info.latest || 'latest'}` : 'Already up to date')}"><ha-icon icon="mdi:download" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> ${info.inProgress ? 'Updating…' : 'Update'}</button>`
+                    : '';
+                  return `<div class="pipup-app-version">${versionHtml}${btnHtml}</div>`;
+                })()}
                 <label class="pipup-power-autoon" title="When you send a notification, turn this TV on first if it's currently off">
                   <input type="checkbox" class="pipup-autoon-check" data-entity="${entity.entity_id}" ${this._powerOnWhenSending?.[entity.entity_id] ? 'checked' : ''} ${powerEntity ? '' : 'disabled'}>
                   Turn On if Off
@@ -1836,6 +2112,20 @@ class PipupNotifyCard extends HTMLElement {
       </div>
     `;
 
+    // Popup stacking (app >= 0.27.0) — arranges simultaneous popups.
+    if (showAdvancedSettings) html += `
+      <div class="pipup-row">
+        <span class="pipup-row-label">Stacking</span>
+        <div class="pipup-row-value">
+          <select id="pipup-stack">
+            ${STACK_OPTIONS.map(opt => `
+              <option value="${opt.value}" ${stack === opt.value ? 'selected' : ''}>${opt.label}</option>
+            `).join('')}
+          </select>
+        </div>
+      </div>
+    `;
+
     if (showAdvancedSettings) html += `
       <div class="pipup-row">
         <span class="pipup-row-label">Notif. Title</span>
@@ -1919,6 +2209,10 @@ class PipupNotifyCard extends HTMLElement {
         <label>
           <input type="checkbox" id="pipup-interrupt" ${interrupt ? 'checked' : ''}>
           <ha-icon icon="mdi:gesture-tap" style="--mdc-icon-size:16px;vertical-align:middle;"></ha-icon> Dismissible
+        </label>
+        <label title="Cover the entire display, including system bars (PiPup app ≥ 0.29.1)">
+          <input type="checkbox" id="pipup-fullscreen" ${fullscreen ? 'checked' : ''}>
+          <ha-icon icon="mdi:fullscreen" style="--mdc-icon-size:16px;vertical-align:middle;"></ha-icon> Full screen
         </label>
       </div>
     `;
@@ -2012,6 +2306,8 @@ class PipupNotifyCard extends HTMLElement {
     const durationValue = this.querySelector('#pipup-duration-value');
     const positionSelect = this.querySelector('#pipup-position');
     const urgencySelect = this.querySelector('#pipup-urgency');
+    const stackSelect = this.querySelector('#pipup-stack');
+    const fullscreenToggle = this.querySelector('#pipup-fullscreen');
     const notifTitleInput = this.querySelector('#pipup-notif-title');
     const titleColorPicker = this.querySelector('#pipup-title-color');
     const mediaWidthSlider = this.querySelector('#pipup-media-width');
@@ -2078,6 +2374,8 @@ class PipupNotifyCard extends HTMLElement {
           this._defaultMessage = this._config.default_message;
           this._duration = this._config.default_duration;
           this._position = this._config.default_position;
+          this._stack = this._config.default_stack || 'none';
+          this._fullscreen = this._config.default_fullscreen || false;
           this._backgroundColor = this._config.default_background_color;
           this._transparency = this._config.default_transparency;
           this._tts = this._config.tts_enabled;
@@ -2102,6 +2400,15 @@ class PipupNotifyCard extends HTMLElement {
       btn.onclick = () => {
         if (btn.disabled) return;
         this._setDevicePower(btn.dataset.entity, btn.dataset.power === 'on');
+      };
+    });
+
+    // Per-device app "Update" button — pushes the available update via update.install.
+    this.querySelectorAll('.pipup-update-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation(); // don't toggle the row expand
+        if (btn.disabled) return;
+        this._installAppUpdate(btn.dataset.entity);
       };
     });
 
@@ -2221,6 +2528,14 @@ class PipupNotifyCard extends HTMLElement {
       };
     }
 
+    if (stackSelect) {
+      stackSelect.onchange = () => { this._stack = stackSelect.value; };
+    }
+
+    if (fullscreenToggle) {
+      fullscreenToggle.onchange = () => { this._fullscreen = fullscreenToggle.checked; };
+    }
+
     if (notifTitleInput) {
       notifTitleInput.onchange = () => { this._notificationTitle = notifTitleInput.value; };
     }
@@ -2299,6 +2614,8 @@ class PipupNotifyCard extends HTMLElement {
         if (durationSlider) this._duration = parseInt(durationSlider.value) || 0;
         if (positionSelect) this._position = parseInt(positionSelect.value);
         if (urgencySelect) this._urgency = urgencySelect.value;
+        if (stackSelect) this._stack = stackSelect.value;
+        if (fullscreenToggle) this._fullscreen = fullscreenToggle.checked;
         if (notifTitleInput) this._notificationTitle = notifTitleInput.value;
         if (titleColorPicker) this._titleColor = titleColorPicker.value;
         if (mediaWidthSlider) this._mediaWidth = parseInt(mediaWidthSlider.value) || 0;
@@ -2343,6 +2660,17 @@ class PipupNotifyCard extends HTMLElement {
         this.sendNotification();
       };
     }
+
+    // Cache ad-hoc settings after ANY in-card control change. Each control's own
+    // handler runs first (bubbling), updating this._*, then this snapshots to
+    // localStorage so the choices survive a reload. Covers inputs/selects/sliders
+    // and the enable/label/id button fields uniformly.
+    const persist = () => this._saveAdhoc();
+    const bodyEl = this.querySelector('#pipup-body');
+    if (bodyEl) {
+      bodyEl.addEventListener('change', persist);
+      bodyEl.addEventListener('input', persist);
+    }
   }
 
   updateStates() {
@@ -2381,6 +2709,23 @@ class PipupNotifyCard extends HTMLElement {
       const offBtn = item.querySelector('.pipup-power-btn.off');
       if (onBtn) onBtn.classList.toggle('active', powerState === 'on');
       if (offBtn) offBtn.classList.toggle('active', powerState === 'off');
+
+      // App version chips + Update button, tracking the update.pipup_*_app entity.
+      const verWrap = item.querySelector('.pipup-app-version');
+      if (verWrap) {
+        const info = this._getUpdateInfo(entityId);
+        const installedEl = verWrap.querySelector('.pipup-ver-installed');
+        if (installedEl && info) installedEl.textContent = info.installed || 'unknown';
+        const updBtn = verWrap.querySelector('.pipup-update-btn');
+        if (updBtn && info) {
+          const canUpdate = info.updateAvailable && !info.inProgress;
+          updBtn.disabled = !canUpdate;
+          updBtn.classList.toggle('has-update', !!info.updateAvailable);
+          updBtn.innerHTML = `<ha-icon icon="mdi:download" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> ${info.inProgress ? 'Updating…' : 'Update'}`;
+          updBtn.title = info.inProgress ? 'Update in progress'
+            : (info.updateAvailable ? `Update to ${info.latest || 'latest'}` : 'Already up to date');
+        }
+      }
     });
 
     // Live-update the status-driven visuals (glow-when-online and the title icon
@@ -2484,11 +2829,45 @@ class PipupNotifyCardEditor extends HTMLElement {
   _fire(config) {
     this._config = { ...config };
     this._skipNextRender = true;
+    this._markProfileDirty();
     this.dispatchEvent(new CustomEvent('config-changed', {
       detail: { config },
       bubbles: true,
       composed: true,
     }));
+  }
+
+  // Reflect the profile-dirty state on the Save button. When clean (nothing changed
+  // since last save/load) it's greyed out and reads "All Settings Saved"; when dirty
+  // it's the active blue "Save".
+  _updateSaveButton() {
+    const btn = this.querySelector('#editor-save-profile');
+    if (!btn) return;
+    if (this._profileDirty) {
+      btn.textContent = 'Save';
+      btn.disabled = false;
+      btn.style.background = '#2196F3';
+      btn.style.color = '#fff';
+      btn.style.cursor = 'pointer';
+      btn.style.opacity = '1';
+    } else {
+      btn.textContent = 'All Settings Saved';
+      btn.disabled = true;
+      btn.style.background = 'var(--secondary-background-color, #3a3a3a)';
+      btn.style.color = 'var(--secondary-text-color, #888)';
+      btn.style.cursor = 'default';
+      btn.style.opacity = '0.8';
+    }
+  }
+
+  _markProfileDirty() {
+    this._profileDirty = true;
+    this._updateSaveButton();
+  }
+
+  _markProfileClean() {
+    this._profileDirty = false;
+    this._updateSaveButton();
   }
 
   _renderTvListInner() {
@@ -2701,6 +3080,8 @@ class PipupNotifyCardEditor extends HTMLElement {
               this._skipNextRender = false;
               this.setConfig(newConfig);
               this._fire(newConfig);
+              // A freshly loaded profile matches its saved state → clean.
+              this._markProfileClean();
             }
           } catch (e) {}
         }
@@ -2815,6 +3196,11 @@ class PipupNotifyCardEditor extends HTMLElement {
           <label class="pip-check"><input type="checkbox" id="editor-show-message" ${cfg.show_message !== false ? 'checked' : ''}> Message</label>
           <label class="pip-check"><input type="checkbox" id="editor-show-selected-tvs" ${cfg.show_selected_tvs !== false ? 'checked' : ''}> Selected TVs</label>
         </div>
+        <div class="pip-row">
+          <label class="pip-check"><input type="checkbox" id="editor-show-app-version" ${cfg.show_app_version !== false ? 'checked' : ''}> App Version (per TV)</label>
+          <label class="pip-check"><input type="checkbox" id="editor-show-update-button" ${cfg.show_update_button !== false ? 'checked' : ''}> Update Button (per TV)</label>
+        </div>
+        <div class="pip-hint" style="margin-bottom:6px;">Shown in each expanded Target-TV row. Requires PiPup app ≥ 0.6.0 (exposes an <code>update.*</code> entity). The Update button pushes the available app update to that TV.</div>
         <div class="pip-row">
           <label class="lbl">Strip Words</label>
           <input type="text" id="editor-strip-strings" value="${cfg.strip_strings !== undefined ? cfg.strip_strings : 'PiPup'}" placeholder="PiPup">
@@ -3085,7 +3471,7 @@ class PipupNotifyCardEditor extends HTMLElement {
       <div class="pip-row">
         <label class="lbl">Loaded:</label>
         <input type="text" id="editor-profile-name" placeholder="Profile name" value="${this._escapeHtml(cfg.active_profile || '')}">
-        <button id="editor-save-profile" style="padding:6px 14px;background:#2196F3;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:500;">Save</button>
+        <button id="editor-save-profile" style="padding:6px 14px;background:#2196F3;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:500;white-space:nowrap;">Save</button>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;padding:4px 0;" id="editor-profile-list">
         ${this._renderProfileChips(profiles)}
@@ -3205,6 +3591,8 @@ class PipupNotifyCardEditor extends HTMLElement {
     `;
 
     this.attachEditorListeners();
+    // A fresh render reflects the last saved/loaded state → start clean.
+    this._markProfileClean();
   }
 
   attachEditorListeners() {
@@ -3316,7 +3704,8 @@ class PipupNotifyCardEditor extends HTMLElement {
          'card_collapsible', 'card_show_chevron', 'card_title_icon_as_chevron',
          'card_border_enabled', 'card_glow_enabled', 'card_glow_borders_only',
          'card_glow_when_online', 'card_shadow_enabled',
-         'show_advanced_settings', 'show_message', 'show_selected_tvs'].forEach(key => {
+         'show_advanced_settings', 'show_message', 'show_selected_tvs',
+         'show_app_version', 'show_update_button'].forEach(key => {
           const el = this.querySelector(`#editor-${key.replace(/_/g, '-')}`);
           if (el) config[key] = el.checked;
         });
@@ -3370,6 +3759,8 @@ class PipupNotifyCardEditor extends HTMLElement {
           this._refreshProfileChips();
           // Keep the "Loaded:" field showing the just-saved profile name.
           if (profileNameInput) profileNameInput.value = name;
+          // Everything just saved → button goes to "All Settings Saved".
+          this._markProfileClean();
         } catch (e) {
           alert('Failed to save profile: ' + e.message);
         }
@@ -3628,6 +4019,8 @@ class PipupNotifyCardEditor extends HTMLElement {
       { id: 'editor-show-advanced-settings', key: 'show_advanced_settings' },
       { id: 'editor-show-message', key: 'show_message' },
       { id: 'editor-show-selected-tvs', key: 'show_selected_tvs' },
+      { id: 'editor-show-app-version', key: 'show_app_version' },
+      { id: 'editor-show-update-button', key: 'show_update_button' },
     ];
 
     checkboxes.forEach(({ id, key }) => {
