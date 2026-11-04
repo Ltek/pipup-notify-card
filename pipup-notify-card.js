@@ -24,7 +24,7 @@
 // BUILD NUMBER — update on every revision. Format: v<year>.<month>.<day>.<increment>
 // The increment is a monotonic version counter — it ALWAYS goes up, never resets
 // (even on a new day). Bump date to today AND increment by one each revision.
-const BUILD_NUMBER = 'v2026.11.04.58';
+const BUILD_NUMBER = 'v2026.11.04.59';
 // ============================================================================
 
 // Shared configuration definitions
@@ -4049,7 +4049,7 @@ customElements.define('pipup-notify-card-editor', PipupNotifyCardEditor);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'pipup-notify-card',
-  name: 'PiPup Notify Card',
+  name: 'PiPup Notify Card (Ltek)',
   description: 'Send notifications with buttons to Android TV via PiPup',
 });
 

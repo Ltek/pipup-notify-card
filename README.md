@@ -35,12 +35,20 @@ This card drives the **PiPup fork by [@mhoogenbosch](https://github.com/mhoogenb
 
 ## Installation
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Ltek&repository=pipup-notify-card&category=plugin)
+
+### HACS
+
+1. Click the button above, or in HACS → **⋮ → Custom repositories** add `https://github.com/Ltek/pipup-notify-card` with category **Dashboard**.
+2. Install **PiPup Notify Card (Ltek)**, then hard-refresh the browser (Ctrl/Cmd+Shift+R).
+
+### Manual
+
 1. Copy `pipup-notify-card.js` into your Home Assistant `config/www/` folder.
-2. Add it as a dashboard resource:
-   - **Settings → Dashboards → ⋮ → Resources → Add Resource**
-   - URL: `/local/pipup-notify-card.js`  ·  Type: **JavaScript Module**
-3. Hard-refresh the browser (Ctrl/Cmd+Shift+R). Confirm the console shows the loaded version, e.g. `[v2026.08.19.54]`.
-4. Add the card to a dashboard: **Add Card → Custom: PiPup Notify Card** (or `type: custom:pipup-notify-card`).
+2. Add it as a dashboard resource: **Settings → Dashboards → ⋮ → Resources → Add Resource**, URL `/local/pipup-notify-card.js`, type **JavaScript Module**.
+3. Hard-refresh the browser (Ctrl/Cmd+Shift+R).
+
+Then add the card to a dashboard: **Add Card → PiPup Notify Card (Ltek)** (or `type: custom:pipup-notify-card`). The browser console and the editor header show the loaded version.
 
 ---
 
@@ -108,9 +116,9 @@ This card drives the **PiPup fork by [@mhoogenbosch](https://github.com/mhoogenb
 
 ---
 
-## Version
+## Version history
 
-Build number format: `v<year>.<month>.<day>.<increment>` — the trailing increment is a monotonic version counter that never resets. It's defined once at the top of `pipup-notify-card.js` (`BUILD_NUMBER`) and shown in the editor header and browser console on load.
+See [CHANGELOG.md](CHANGELOG.md). Builds are numbered `YYYY.MM.DD.BUILD` (the last part never resets), and each one is tagged in git.
 
 ## Credits
 
