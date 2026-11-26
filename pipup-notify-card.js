@@ -24,7 +24,7 @@
 // BUILD NUMBER — update on every revision. Format: v<year>.<month>.<day>.<increment>
 // The increment is a monotonic version counter — it ALWAYS goes up, never resets
 // (even on a new day). Bump date to today AND increment by one each revision.
-const BUILD_NUMBER = 'v2026.11.04.61';
+const BUILD_NUMBER = 'v2026.11.26.62';
 // ============================================================================
 
 // Shared configuration definitions
@@ -320,6 +320,10 @@ class PipupNotifyCard extends HTMLElement {
       // Full-screen popup covering the whole display (app >= 0.29.1).
       default_fullscreen: false,
       // Card visual settings
+      // card_style: 'theme' = the HA theme's card look (border, corners, shadow from the theme; the
+      // glow below is added on top). New cards start with it; a config without the key keeps the
+      // older 'custom' look (see setConfig).
+      card_style: 'theme',
       // card_bg_mode: 'theme' (HA theme default), 'transparent', or 'custom' (card_bg_color).
       card_bg_mode: 'theme',
       card_bg_color: '',
@@ -663,7 +667,9 @@ class PipupNotifyCard extends HTMLElement {
 
     this._config = {
       ...PipupNotifyCard.getStubConfig(),
-      ...config
+      ...config,
+      // An existing card (saved before card_style existed) keeps its look
+      card_style: config.card_style === 'theme' ? 'theme' : 'custom'
     };
 
     this._selectedDevices = this._config.selected_devices || [];
@@ -1016,6 +1022,23 @@ class PipupNotifyCard extends HTMLElement {
     return parts.length ? parts.join(', ') : 'none';
   }
 
+  // Theme card style: the theme's card shadow, read where the card sits. Read as a value (not var())
+  // because it is joined with the glow, and a theme's "none" would void the whole list.
+  _themeShadow() {
+    try {
+      const v = getComputedStyle(this).getPropertyValue('--ha-card-box-shadow').trim();
+      return (!v || v === 'none') ? null : v;
+    } catch (e) { return null; }
+  }
+
+  // Glow + the base shadow: the card's own drop shadow when enabled, else (Theme style) the theme's.
+  _combinedShadow(shouldGlow) {
+    const glow = this._computeGlowShadow(shouldGlow);
+    let base = this._computeDropShadow();
+    if (!base && this._config.card_style === 'theme') base = this._themeShadow();
+    return [glow !== 'none' ? glow : null, base].filter(Boolean).join(', ') || 'none';
+  }
+
   // Build the plain elevation drop-shadow string (or null when disabled).
   _computeDropShadow() {
     const config = this._config;
@@ -1241,6 +1264,12 @@ class PipupNotifyCard extends HTMLElement {
 
     const container = document.createElement('div');
     container.className = 'pipup-wrap';
+    // The card draws in the page's light DOM, so its <style> is shared with every other PiPup card on
+    // the page. The rules carrying this card's settings are scoped to this instance, or the last card
+    // rendered would set the border / glow / collapse state of all of them.
+    if (!this._pipupUid) this._pipupUid = 'p' + Math.random().toString(36).slice(2, 10);
+    const uid = this._pipupUid;
+    container.dataset.pipupUid = uid;
 
     const config = this._config;
     const message = this._message || this._defaultMessage || config.default_message;
@@ -1336,15 +1365,15 @@ class PipupNotifyCard extends HTMLElement {
       shouldGlow = true;
     }
 
-    // Glow + plain elevation drop-shadow (shared with the live status updater).
-    const glowShadow = this._computeGlowShadow(shouldGlow);
-    const dropShadow = this._computeDropShadow();
+    // Glow + drop shadow (or the theme's shadow), shared with the live status updater.
+    const combinedShadow = this._combinedShadow(shouldGlow);
 
-    // The glow and the drop-shadow can both be active; combine into one box-shadow.
-    const combinedShadow = [glowShadow !== 'none' ? glowShadow : null, dropShadow]
-      .filter(Boolean).join(', ') || 'none';
-
-    const borderCss = cardBorderEnabled ? `
+    // Theme style with no border of its own: the theme's border, corners (all sides)
+    const themeBorderCss = `
+      border: var(--ha-card-border-width, 1px) solid var(--ha-card-border-color, var(--divider-color, #e0e0e0));
+      border-radius: var(--ha-card-border-radius, 12px);
+    `;
+    const borderCss = (config.card_style === 'theme' && !cardBorderEnabled) ? themeBorderCss : cardBorderEnabled ? `
       border-top: ${cardBorderTop ? `${cardBorderWidth}px solid ${cardBorderColor}` : 'none'};
       border-bottom: ${cardBorderBottom ? `${cardBorderWidth}px solid ${cardBorderColor}` : 'none'};
       border-left: ${cardBorderLeft ? `${cardBorderWidth}px solid ${cardBorderColor}` : 'none'};
@@ -1353,7 +1382,7 @@ class PipupNotifyCard extends HTMLElement {
     ` : '';
 
     const cardStyles = `
-      .pipup-wrap {
+      .pipup-wrap[data-pipup-uid="${uid}"] {
         --pipup-card-bg: ${cardBgColor};
         --pipup-border: ${borderCss};
         --pipup-glow: ${combinedShadow};
@@ -1388,7 +1417,7 @@ class PipupNotifyCard extends HTMLElement {
       .pipup-wrap input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
       .pipup-wrap input[type="color"]::-webkit-color-swatch { border: none; border-radius: 5px; }
       .pipup-wrap input[type="color"]::-moz-color-swatch { border: none; border-radius: 5px; }
-      .pipup-title-bar {
+      [data-pipup-uid="${uid}"] .pipup-title-bar {
         display: flex;
         align-items: center;
         gap: 8px;
@@ -1436,7 +1465,7 @@ class PipupNotifyCard extends HTMLElement {
       .pipup-title-chevron.expanded {
         transform: rotate(-90deg);
       }
-      .pipup-body {
+      [data-pipup-uid="${uid}"] .pipup-body {
         padding: 0 4px 4px 4px;
         display: ${cardCollapsible && this._cardCollapsed ? 'none' : 'flex'};
         flex-direction: column;
@@ -1665,7 +1694,7 @@ class PipupNotifyCard extends HTMLElement {
         font-size: 14px;
         cursor: pointer;
       }
-      .pipup-device-head .device-id {
+      [data-pipup-uid="${uid}"] .pipup-device-head .device-id {
         font-size: 11px;
         color: var(--secondary-text-color, #808080);
         display: ${showEntityIds ? 'inline' : 'none'};
@@ -2784,19 +2813,16 @@ class PipupNotifyCard extends HTMLElement {
       wrap.style.setProperty('--pipup-title-icon-color', color);
     }
 
-    // Glow-when-online: recompute the combined box-shadow if that trigger is on,
-    // reusing the same glow/shadow builders as the initial render.
-    if (config.card_glow_when_online && wrap) {
+    // Glow-when-online (and the Theme style's shadow, which follows the theme): recompute the
+    // combined box-shadow, reusing the same builders as the initial render.
+    if ((config.card_glow_when_online || config.card_style === 'theme') && wrap) {
       let shouldGlow = config.card_glow_enabled === true;
       if (config.card_glow_entity && this._hass) {
         const s = this._hass.states[config.card_glow_entity];
         shouldGlow = shouldGlow && s && s.state === 'on';
       }
-      if (anyOnline) shouldGlow = true;
-      const glowShadow = this._computeGlowShadow(shouldGlow);
-      const dropShadow = this._computeDropShadow();
-      const combined = [glowShadow !== 'none' ? glowShadow : null, dropShadow].filter(Boolean).join(', ') || 'none';
-      wrap.style.setProperty('--pipup-glow', combined);
+      if (config.card_glow_when_online && anyOnline) shouldGlow = true;
+      wrap.style.setProperty('--pipup-glow', this._combinedShadow(shouldGlow));
     }
   }
 
@@ -3265,6 +3291,18 @@ class PipupNotifyCardEditor extends HTMLElement {
       </div>
 
       <div class="pip-sub">
+        <div class="pip-sub-label">Card Style</div>
+        <div class="pip-row">
+          <label class="lbl">Style</label>
+          <select id="editor-card-style">
+            <option value="theme" ${cfg.card_style === 'theme' ? 'selected' : ''}>Theme card (your HA theme)</option>
+            <option value="custom" ${cfg.card_style !== 'theme' ? 'selected' : ''}>Custom</option>
+          </select>
+        </div>
+        <div class="pip-hint" style="margin:0 0 4px 112px;">Theme card: your theme's border, corners and shadow, like HA's own cards; the Glow below is added on top. Turning on a Border or Drop Shadow here replaces the theme's. Custom: only the settings below.</div>
+      </div>
+
+      <div class="pip-sub">
         <div class="pip-sub-label">Background</div>
         <div class="pip-row">
           <label class="lbl">Mode</label>
@@ -3317,7 +3355,7 @@ class PipupNotifyCardEditor extends HTMLElement {
           <input type="range" id="editor-card-glow-intensity" min="0.25" max="3.0" step="0.05" value="${cfg.card_glow_intensity || 1.0}">
           <span class="pip-val" id="editor-card-glow-intensity-value">${Math.round((cfg.card_glow_intensity || 1.0) * 100)}%</span>
         </div>
-        <label class="pip-check" style="padding:4px 0;"><input type="checkbox" id="editor-card-glow-borders-only" ${cfg.card_glow_borders_only !== false ? 'checked' : ''}> Glow stronger on sides with borders (when borders enabled)</label>
+        <label class="pip-check" style="padding:4px 0;"><input type="checkbox" id="editor-card-glow-borders-only" ${cfg.card_glow_borders_only !== false ? 'checked' : ''}> Glow only on the bordered sides (when Border is enabled)</label>
         <label class="pip-check" style="padding:4px 0;"><input type="checkbox" id="editor-card-glow-when-online" ${cfg.card_glow_when_online ? 'checked' : ''}> Glow when any TV is online</label>
         <div class="pip-row">
           <label class="lbl">Glow Entity</label>
@@ -3742,7 +3780,7 @@ class PipupNotifyCardEditor extends HTMLElement {
         // (drop-shadow opacity stays a 0-1 fraction; the mode/color selects too).
         ['card_shadow_color', 'card_shadow_x', 'card_shadow_y', 'card_shadow_blur',
          'card_shadow_spread', 'card_shadow_opacity',
-         'card_bg_mode', 'card_title_icon_color_mode',
+         'card_bg_mode', 'card_style', 'card_title_icon_color_mode',
          'card_title_icon_on_mode', 'card_title_icon_on_color',
          'card_title_icon_off_mode', 'card_title_icon_off_color'].forEach(key => {
           if (this._config[key] !== undefined) config[key] = this._config[key];
@@ -3853,6 +3891,9 @@ class PipupNotifyCardEditor extends HTMLElement {
 
     // Selects that both store a value AND toggle related rows' visibility in place
     // (so the change doesn't require a full re-render that would steal focus).
+    const styleEl = this.querySelector('#editor-card-style');
+    if (styleEl) styleEl.addEventListener('change', () => this._fire({ ...this._config, card_style: styleEl.value }));
+
     const bgModeEl = this.querySelector('#editor-card-bg-mode');
     if (bgModeEl) {
       bgModeEl.addEventListener('change', () => {

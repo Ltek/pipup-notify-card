@@ -1,5 +1,19 @@
 # Changelog
 
+## v2026.11.26.62
+
+- **Theme card style.** Card Style → **Theme card (your HA theme)** gives the card your theme's
+  border, corners and shadow, like HA's own cards (the background already followed the theme). The
+  Glow is **added** on top, so the card keeps the theme look and also glows while a TV is online or
+  your glow entity is on. Turning on this card's own Border or Drop Shadow replaces the theme's.
+  - New cards start with it (`card_style: theme`). Existing cards keep their current look until you
+    pick it.
+- **Fixed: several PiPup cards on one page shared each other's look.** The card's style rules
+  weren't scoped, so the last card drawn set the border, glow and collapse state of all of them.
+  Each card now keeps its own.
+- The *Glow stronger on sides with borders* option is renamed **Glow only on the bordered sides**,
+  which is what it does.
+
 ## v2026.11.04.61
 
 - **One Update control per TV:** the redundant large button is gone — the small **Update** pill in the app-version line is now the action.
