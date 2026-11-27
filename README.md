@@ -73,7 +73,7 @@ Then add the card to a dashboard: **Add Card → PiPup Notify Card (Ltek)** (or 
 ### Per-TV device tools (expanded row)
 - **Auto-update** switch — toggle the integration's automatic app updates (ha-pipup ≥ 1.31.0).
 - **Reload** — press the per-TV Reload button (ha-pipup ≥ 1.31.0).
-- **Screenshot** — **view** shows a live frame of the TV inline (fetched on demand; nothing is stored), **save** writes a JPEG to `/config/www/pipup/` (served at `/local/pipup/…`) via `camera.snapshot`. Requires the integration's "A picture of the screen" option (ha-pipup ≥ 2.0.0) and Android 11+ with the screen on; for *save*, `/config/www` must be in `allowlist_external_dirs`.
+- **Screenshot** — **view** shows a live frame of the TV inline (fetched on demand; nothing is stored), **save** writes a JPEG via `camera.snapshot` to the folder chosen in **Visual Editor → Card Settings → Screenshot Folder**: **Public** `/config/www/tmp` (default, served at `/local/tmp/…`), **Media** `/media/pipup` (appears in the HA Media browser), or a **Custom** path. `/config/www/…` and `/media/…` work by default; other folders must be in `allowlist_external_dirs`, and the folder must already exist. Requires the integration's "A picture of the screen" option (ha-pipup ≥ 2.0.0), Android 11+, screen on.
 - Each tool appears only when its matching integration entity exists.
 
 ### Per-TV power control

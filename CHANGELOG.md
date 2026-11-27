@@ -1,5 +1,10 @@
 # Changelog
 
+## v2026.11.27.64
+
+- **Screenshot save folder is now configurable** (Visual Editor → Card Settings → *Screenshot Folder*): **Public** `/config/www/tmp` (default, served at `/local/tmp/…`), **Media** `/media/pipup` (shows in the HA Media browser), or a **Custom** path. Both `/config/www/…` and `/media/…` work with `camera.snapshot` out of the box; other folders must be in `allowlist_external_dirs`, and the target folder must already exist.
+- Previous default `/config/www/pipup/` usually did not exist, so saves silently failed; the error now names the folder to fix.
+
 ## v2026.11.27.63
 
 - **New notification options** tracking recent PiPup/ha-pipup builds: **Poster Fit** (`poster_mode`), media **Buffer** (`buffer_ms`), **Software decoder** and **Mute media** for video, plus **Icon**, **Sound** + volume, **Padding**, and **Bring to front**. Each is sent only when set, so the app keeps its own defaults otherwise.

@@ -24,7 +24,7 @@
 // BUILD NUMBER — update on every revision. Format: v<year>.<month>.<day>.<increment>
 // The increment is a monotonic version counter — it ALWAYS goes up, never resets
 // (even on a new day). Bump date to today AND increment by one each revision.
-const BUILD_NUMBER = 'v2026.11.27.63';
+const BUILD_NUMBER = 'v2026.11.27.64';
 // ============================================================================
 
 // Shared configuration definitions
@@ -340,6 +340,9 @@ class PipupNotifyCard extends HTMLElement {
       default_muted: false,                // mute video audio
       default_bring_to_front: false,       // raise an existing popup with the same id
       default_padding: 0,                  // inner padding (px); 0 = app default
+      // Folder camera.snapshot writes the "Save" screenshot to. Must exist and be
+      // in HA's allowlist_external_dirs. Under /config/www it's also at /local/….
+      screenshot_dir: '/config/www/tmp',
       // Card visual settings
       // card_style: 'theme' = the HA theme's card look (border, corners, shadow from the theme; the
       // glow below is added on top). New cards start with it; a config without the key keeps the
@@ -1005,13 +1008,19 @@ class PipupNotifyCard extends HTMLElement {
     if (!this._hass) return;
     const slug = camId.split('.')[1] || 'pipup';
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `/config/www/pipup/${slug}_${stamp}.jpg`;
+    // Target dir must be writable and in allowlist_external_dirs. Default
+    // /config/www/tmp so the file is also reachable at /local/tmp/.
+    const dir = (this._config.screenshot_dir || '/config/www/tmp').replace(/\/+$/, '');
+    const filename = `${dir}/${slug}_${stamp}.jpg`;
+    const localUrl = dir.startsWith('/config/www')
+      ? '/local' + dir.slice('/config/www'.length) + `/${slug}_${stamp}.jpg`
+      : null;
     this._logToHA('info', `camera.snapshot ${camId} -> ${filename}`);
     this._hass.callService('camera', 'snapshot', { entity_id: camId, filename })
-      .then(() => this.showSuccess(`✅ Saved ${name} screenshot to ${filename} (/local/pipup/…).`))
+      .then(() => this.showSuccess(`✅ Saved ${name} screenshot to ${filename}${localUrl ? ` (${localUrl})` : ''}.`))
       .catch(err => {
         console.error('[PiPup] Snapshot error for ' + camId + ':', err);
-        this.showError(`⚠️ Failed to save screenshot for ${name}: ${err.message || 'error'}. Check allowlist_external_dirs includes /config/www.`);
+        this.showError(`⚠️ Failed to save screenshot for ${name}: ${err.message || 'error'}. Check ${dir} exists and is in allowlist_external_dirs.`);
       });
   }
 
@@ -3663,6 +3672,10 @@ class PipupNotifyCardEditor extends HTMLElement {
     `;
 
     // --- Card Settings body ---
+    // Screenshot folder: a preset (public www/tmp or media) or a custom path.
+    const shotDir = cfg.screenshot_dir || '/config/www/tmp';
+    const shotMode = shotDir === '/config/www/tmp' ? 'www_tmp'
+      : (shotDir === '/media/pipup' ? 'media' : 'custom');
     const cardVisualsBody = `
       <div class="pip-sub" style="border-top:none;padding-top:0;margin-top:0;">
         <div class="pip-sub-label">Section Display Options</div>
@@ -3689,6 +3702,20 @@ class PipupNotifyCardEditor extends HTMLElement {
             <option value="true" ${cfg.show_entity_ids ? 'selected' : ''}>Show</option>
           </select>
           <span class="pip-hint">Display entity IDs under each TV name</span>
+        </div>
+        <div class="pip-row">
+          <label class="lbl">Screenshot Folder</label>
+          <select id="editor-screenshot-dir-mode">
+            <option value="www_tmp" ${shotMode === 'www_tmp' ? 'selected' : ''}>Public — /config/www/tmp (→ /local/tmp)</option>
+            <option value="media" ${shotMode === 'media' ? 'selected' : ''}>Media — /media/pipup (Media browser)</option>
+            <option value="custom" ${shotMode === 'custom' ? 'selected' : ''}>Custom…</option>
+          </select>
+          <span class="pip-hint">Where the per-TV <b>Save</b> screenshot is written (<code>camera.snapshot</code>).</span>
+        </div>
+        <div class="pip-row" id="editor-screenshot-dir-custom-row" style="display:${shotMode === 'custom' ? '' : 'none'};">
+          <label class="lbl">Custom Path</label>
+          <input type="text" id="editor-screenshot-dir-custom" value="${this._escapeHtml(shotMode === 'custom' ? shotDir : '')}" placeholder="/config/www/tmp">
+          <span class="pip-hint">Absolute path. <code>/config/www/…</code> and <code>/media/…</code> work by default; other folders must be in <code>allowlist_external_dirs</code>. The folder must already exist.</span>
         </div>
       </div>
 
@@ -4109,6 +4136,29 @@ class PipupNotifyCardEditor extends HTMLElement {
         this._lastTvKey = null;
         this._updateTvList();
         this._fire(this._config);
+      });
+    }
+
+    // Screenshot folder: preset modes set screenshot_dir directly; "custom" reveals
+    // a text field that drives it.
+    const shotModeEl = this.querySelector('#editor-screenshot-dir-mode');
+    const shotCustomRow = this.querySelector('#editor-screenshot-dir-custom-row');
+    const shotCustomEl = this.querySelector('#editor-screenshot-dir-custom');
+    if (shotModeEl) {
+      shotModeEl.addEventListener('change', () => {
+        const mode = shotModeEl.value;
+        if (shotCustomRow) shotCustomRow.style.display = mode === 'custom' ? '' : 'none';
+        let dir;
+        if (mode === 'media') dir = '/media/pipup';
+        else if (mode === 'custom') dir = (shotCustomEl && shotCustomEl.value.trim()) || '/config/www/tmp';
+        else dir = '/config/www/tmp';
+        this._fire({ ...this._config, screenshot_dir: dir });
+      });
+    }
+    if (shotCustomEl) {
+      shotCustomEl.addEventListener('change', () => {
+        const dir = shotCustomEl.value.trim() || '/config/www/tmp';
+        this._fire({ ...this._config, screenshot_dir: dir });
       });
     }
 
