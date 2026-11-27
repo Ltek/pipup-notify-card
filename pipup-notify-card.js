@@ -24,7 +24,7 @@
 // BUILD NUMBER — update on every revision. Format: v<year>.<month>.<day>.<increment>
 // The increment is a monotonic version counter — it ALWAYS goes up, never resets
 // (even on a new day). Bump date to today AND increment by one each revision.
-const BUILD_NUMBER = 'v2026.11.26.62';
+const BUILD_NUMBER = 'v2026.11.27.63';
 // ============================================================================
 
 // Shared configuration definitions
@@ -108,6 +108,15 @@ const STACK_OPTIONS = [
   { value: 'none', label: 'Overlap (default)' },
   { value: 'vertical', label: 'Stack vertically' },
   { value: 'horizontal', label: 'Stack horizontally' }
+];
+
+// pipup.show `poster_mode` — how a poster/video fills its box (app >= ha-pipup 2.0.0).
+const POSTER_MODE_OPTIONS = [
+  { value: '', label: 'Default' },
+  { value: 'fit', label: 'Fit' },
+  { value: 'fill', label: 'Fill' },
+  { value: 'stretch', label: 'Stretch' },
+  { value: 'center', label: 'Center' }
 ];
 
 // pipup.show `urgency` — colored border presets applied on the TV.
@@ -319,6 +328,18 @@ class PipupNotifyCard extends HTMLElement {
       default_stack: 'none',
       // Full-screen popup covering the whole display (app >= 0.29.1).
       default_fullscreen: false,
+      // Media playback tuning (ha-pipup >= 1.31.0 / 2.0.0). Only sent when a
+      // video/image/camera URL is set. Empty/0/false => use the app default.
+      default_buffer_ms: 0,                // video/camera jitter buffer (ms); 0 = app default
+      default_poster_mode: '',             // '', fit, fill, stretch, center
+      default_software_decoder: false,     // force software video decoder
+      // Extra notification-composing options (not media/TV control).
+      default_icon: '',                    // mdi:* icon shown on the popup
+      default_sound: '',                   // sound name (e.g. 'default'); '' = silent
+      default_sound_volume: 1,             // 0..1
+      default_muted: false,                // mute video audio
+      default_bring_to_front: false,       // raise an existing popup with the same id
+      default_padding: 0,                  // inner padding (px); 0 = app default
       // Card visual settings
       // card_style: 'theme' = the HA theme's card look (border, corners, shadow from the theme; the
       // glow below is added on top). New cards start with it; a config without the key keeps the
@@ -421,6 +442,15 @@ class PipupNotifyCard extends HTMLElement {
     this._urgency = '';
     this._stack = 'none';
     this._fullscreen = false;
+    this._bufferMs = 0;
+    this._posterMode = '';
+    this._softwareDecoder = false;
+    this._icon = '';
+    this._sound = '';
+    this._soundVolume = 1;
+    this._muted = false;
+    this._bringToFront = false;
+    this._padding = 0;
     this._notificationTitle = '';
     this._titleColor = '#FFFFFF';
     this._mediaWidth = 480;
@@ -491,6 +521,15 @@ class PipupNotifyCard extends HTMLElement {
       urgency: this._urgency,
       stack: this._stack,
       fullscreen: this._fullscreen,
+      bufferMs: this._bufferMs,
+      posterMode: this._posterMode,
+      softwareDecoder: this._softwareDecoder,
+      icon: this._icon,
+      sound: this._sound,
+      soundVolume: this._soundVolume,
+      muted: this._muted,
+      bringToFront: this._bringToFront,
+      padding: this._padding,
       tts: this._tts,
       interrupt: this._interrupt,
       showProgress: this._showProgress,
@@ -538,6 +577,15 @@ class PipupNotifyCard extends HTMLElement {
     set('_urgency', data.urgency);
     set('_stack', data.stack);
     set('_fullscreen', data.fullscreen);
+    set('_bufferMs', data.bufferMs);
+    set('_posterMode', data.posterMode);
+    set('_softwareDecoder', data.softwareDecoder);
+    set('_icon', data.icon);
+    set('_sound', data.sound);
+    set('_soundVolume', data.soundVolume);
+    set('_muted', data.muted);
+    set('_bringToFront', data.bringToFront);
+    set('_padding', data.padding);
     set('_tts', data.tts);
     set('_interrupt', data.interrupt);
     set('_showProgress', data.showProgress);
@@ -564,6 +612,15 @@ class PipupNotifyCard extends HTMLElement {
         default_position: this._position,
         default_stack: this._stack,
         default_fullscreen: this._fullscreen,
+        default_buffer_ms: this._bufferMs,
+        default_poster_mode: this._posterMode,
+        default_software_decoder: this._softwareDecoder,
+        default_icon: this._icon,
+        default_sound: this._sound,
+        default_sound_volume: this._soundVolume,
+        default_muted: this._muted,
+        default_bring_to_front: this._bringToFront,
+        default_padding: this._padding,
         default_background_color: this._backgroundColor,
         default_transparency: this._transparency,
         tts_enabled: this._tts,
@@ -621,6 +678,15 @@ class PipupNotifyCard extends HTMLElement {
     this._position = cfg.default_position !== undefined ? cfg.default_position : this._config.default_position;
     this._stack = cfg.default_stack !== undefined ? cfg.default_stack : (this._config.default_stack || 'none');
     this._fullscreen = cfg.default_fullscreen !== undefined ? cfg.default_fullscreen : (this._config.default_fullscreen || false);
+    this._bufferMs = cfg.default_buffer_ms !== undefined ? cfg.default_buffer_ms : (this._config.default_buffer_ms || 0);
+    this._posterMode = cfg.default_poster_mode !== undefined ? cfg.default_poster_mode : (this._config.default_poster_mode || '');
+    this._softwareDecoder = cfg.default_software_decoder !== undefined ? cfg.default_software_decoder : (this._config.default_software_decoder || false);
+    this._icon = cfg.default_icon !== undefined ? cfg.default_icon : (this._config.default_icon || '');
+    this._sound = cfg.default_sound !== undefined ? cfg.default_sound : (this._config.default_sound || '');
+    this._soundVolume = cfg.default_sound_volume !== undefined ? cfg.default_sound_volume : (this._config.default_sound_volume ?? 1);
+    this._muted = cfg.default_muted !== undefined ? cfg.default_muted : (this._config.default_muted || false);
+    this._bringToFront = cfg.default_bring_to_front !== undefined ? cfg.default_bring_to_front : (this._config.default_bring_to_front || false);
+    this._padding = cfg.default_padding !== undefined ? cfg.default_padding : (this._config.default_padding || 0);
     this._backgroundColor = cfg.default_background_color || this._config.default_background_color;
     this._transparency = cfg.default_transparency || this._config.default_transparency;
     this._tts = cfg.tts_enabled !== undefined ? cfg.tts_enabled : this._config.tts_enabled;
@@ -691,6 +757,15 @@ class PipupNotifyCard extends HTMLElement {
       this._urgency = this._config.default_urgency || '';
       this._stack = this._config.default_stack || 'none';
       this._fullscreen = this._config.default_fullscreen || false;
+      this._bufferMs = this._config.default_buffer_ms || 0;
+      this._posterMode = this._config.default_poster_mode || '';
+      this._softwareDecoder = this._config.default_software_decoder || false;
+      this._icon = this._config.default_icon || '';
+      this._sound = this._config.default_sound || '';
+      this._soundVolume = this._config.default_sound_volume ?? 1;
+      this._muted = this._config.default_muted || false;
+      this._bringToFront = this._config.default_bring_to_front || false;
+      this._padding = this._config.default_padding || 0;
       this._notificationTitle = this._config.notification_title || 'Home Assistant';
       this._titleColor = this._config.title_color || '#FFFFFF';
       this._mediaWidth = this._config.default_media_width || 480;
@@ -869,6 +944,90 @@ class PipupNotifyCard extends HTMLElement {
       if (this._hass?.states?.[guess]) return guess;
     }
     return null;
+  }
+
+  // Generic: find an entity in `domain` on the same device as the given notify
+  // entity, preferring one whose id contains one of `nameHints`. Returns null if
+  // none (or if ambiguous and no hint matches).
+  _getDeviceEntity(entityId, domain, nameHints = []) {
+    if (!this._hass?.entities) return null;
+    const reg = this._hass.entities[entityId];
+    if (!reg || !reg.device_id) return null;
+    const candidates = Object.values(this._hass.entities).filter(e =>
+      e.device_id === reg.device_id && e.entity_id.startsWith(domain + '.')
+    );
+    if (!candidates.length) return null;
+    for (const hint of nameHints) {
+      const hit = candidates.find(e => e.entity_id.toLowerCase().includes(hint));
+      if (hit) return hit.entity_id;
+    }
+    return candidates.length === 1 ? candidates[0].entity_id : null;
+  }
+
+  // Per-TV "Screen" camera (ha-pipup >= 2.0.0, only when the integration's
+  // "A picture of the screen" option is on). Live screenshot, never stored.
+  _getScreenCameraId(entityId) {
+    return this._getDeviceEntity(entityId, 'camera', ['screen']);
+  }
+
+  // Per-TV "Automatic updates" switch (ha-pipup >= 1.31.0).
+  _getAutoUpdateSwitchId(entityId) {
+    return this._getDeviceEntity(entityId, 'switch', ['auto_update', 'automatic_update', 'auto-update']);
+  }
+
+  // Per-TV "Reload" button (ha-pipup >= 1.31.0).
+  _getReloadButtonId(entityId) {
+    return this._getDeviceEntity(entityId, 'button', ['reload', 'sync', 'refresh']);
+  }
+
+  // Build the HA camera-proxy URL for the current screen frame. The entity_picture
+  // attribute carries a signed access token; appending a cache-buster forces a
+  // fresh frame on each click. Returns null if unavailable.
+  _getScreenImageUrl(entityId) {
+    const camId = this._getScreenCameraId(entityId);
+    if (!camId) return null;
+    const st = this._hass?.states?.[camId];
+    const pic = st?.attributes?.entity_picture;
+    if (!pic) return null;
+    const base = (this._hass.hassUrl ? this._hass.hassUrl(pic) : pic);
+    return base + (base.includes('?') ? '&' : '?') + '_t=' + Date.now();
+  }
+
+  // Save the current screen frame via camera.snapshot. HA writes it under an
+  // allowlisted dir; we target config/www so it is reachable at /local/.
+  _saveScreenshot(entityId) {
+    const camId = this._getScreenCameraId(entityId);
+    const name = stripName(this._getFriendlyName(entityId), this._config.strip_strings);
+    if (!camId) {
+      this.showError(`❌ No screen camera for ${name}. Enable "A picture of the screen" in the PiPup integration (app ≥ Android 11).`);
+      return;
+    }
+    if (!this._hass) return;
+    const slug = camId.split('.')[1] || 'pipup';
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `/config/www/pipup/${slug}_${stamp}.jpg`;
+    this._logToHA('info', `camera.snapshot ${camId} -> ${filename}`);
+    this._hass.callService('camera', 'snapshot', { entity_id: camId, filename })
+      .then(() => this.showSuccess(`✅ Saved ${name} screenshot to ${filename} (/local/pipup/…).`))
+      .catch(err => {
+        console.error('[PiPup] Snapshot error for ' + camId + ':', err);
+        this.showError(`⚠️ Failed to save screenshot for ${name}: ${err.message || 'error'}. Check allowlist_external_dirs includes /config/www.`);
+      });
+  }
+
+  // Press the per-TV Reload button.
+  _reloadDevice(entityId) {
+    const btnId = this._getReloadButtonId(entityId);
+    const name = stripName(this._getFriendlyName(entityId), this._config.strip_strings);
+    if (!btnId) {
+      this.showError(`❌ No Reload button for ${name} (needs ha-pipup ≥ 1.31.0).`);
+      return;
+    }
+    if (!this._hass) return;
+    this._logToHA('info', `button.press ${btnId}`);
+    this._hass.callService('button', 'press', { entity_id: btnId })
+      .then(() => this.showSuccess(`✅ Reloaded ${name}.`))
+      .catch(err => this.showError(`⚠️ Failed to reload ${name}: ${err.message || 'error'}`));
   }
 
   // Read installed/latest app versions and whether an update is pending from the
@@ -1104,6 +1263,18 @@ class PipupNotifyCard extends HTMLElement {
       data.media_width = mediaWidth;
     }
 
+    // Media playback tuning (ha-pipup >= 1.31.0 / 2.0.0) — only meaningful with media.
+    if (imageUri || videoUri) {
+      const bufferMs = Number(this._bufferMs !== undefined ? this._bufferMs : this._config.default_buffer_ms) || 0;
+      if (bufferMs > 0) data.buffer_ms = bufferMs;
+      const posterMode = this._posterMode !== undefined ? this._posterMode : this._config.default_poster_mode;
+      if (posterMode) data.poster_mode = posterMode;
+      const softwareDecoder = this._softwareDecoder !== undefined ? this._softwareDecoder : this._config.default_software_decoder;
+      if (softwareDecoder) data.software_decoder = true;
+      const muted = this._muted !== undefined ? this._muted : this._config.default_muted;
+      if (muted) data.muted = true;
+    }
+
     if (tts) {
       data.tts = message;
     }
@@ -1141,6 +1312,21 @@ class PipupNotifyCard extends HTMLElement {
     if (fullscreen) {
       data.fullscreen = true;
     }
+
+    // Extra notification-composing options. Each is sent only when set, so the app
+    // keeps its own defaults otherwise.
+    const icon = (this._icon !== undefined ? this._icon : this._config.default_icon || '').trim?.() ?? '';
+    if (icon) data.icon = icon;
+    const sound = (this._sound !== undefined ? this._sound : this._config.default_sound || '').trim?.() ?? '';
+    if (sound) {
+      data.sound = sound;
+      const vol = Number(this._soundVolume !== undefined ? this._soundVolume : this._config.default_sound_volume);
+      if (Number.isFinite(vol) && vol >= 0 && vol < 1) data.sound_volume = vol;
+    }
+    const bringToFront = this._bringToFront !== undefined ? this._bringToFront : this._config.default_bring_to_front;
+    if (bringToFront) data.bring_to_front = true;
+    const padding = Number(this._padding !== undefined ? this._padding : this._config.default_padding) || 0;
+    if (padding > 0) data.padding = padding;
 
     const selectedDevices = this._selectedDevices.length > 0
       ? this._selectedDevices
@@ -1283,6 +1469,10 @@ class PipupNotifyCard extends HTMLElement {
     const urgency = this._urgency !== undefined ? this._urgency : (config.default_urgency || '');
     const stack = this._stack !== undefined ? this._stack : (config.default_stack || 'none');
     const fullscreen = this._fullscreen !== undefined ? this._fullscreen : (config.default_fullscreen || false);
+    const posterMode = this._posterMode !== undefined ? this._posterMode : (config.default_poster_mode || '');
+    const softwareDecoder = this._softwareDecoder !== undefined ? this._softwareDecoder : (config.default_software_decoder || false);
+    const muted = this._muted !== undefined ? this._muted : (config.default_muted || false);
+    const bringToFront = this._bringToFront !== undefined ? this._bringToFront : (config.default_bring_to_front || false);
     const notifTitle = this._notificationTitle || config.notification_title || 'Home Assistant';
     const titleColor = this._titleColor || config.title_color || '#FFFFFF';
     const mediaWidth = this._mediaWidth || config.default_media_width || 480;
@@ -1765,6 +1955,31 @@ class PipupNotifyCard extends HTMLElement {
       .pipup-power-btn.active {
         background: #4CAF50; border-color: #4CAF50; color: #fff;
       }
+      .pipup-device-tools {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+        width: 100%; margin-top: 4px;
+      }
+      .pipup-tool-btn {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 4px 12px; font-size: 12px;
+        border: 1px solid var(--divider-color, #444); border-radius: 6px;
+        background: var(--secondary-background-color, #2a2a2a);
+        color: var(--primary-text-color, #e1e1e1);
+        cursor: pointer; transition: all 0.15s;
+      }
+      .pipup-tool-btn:hover:not(:disabled) { filter: brightness(1.2); }
+      .pipup-tool-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+      .pipup-tool-toggle {
+        display: inline-flex; align-items: center; gap: 4px;
+        font-size: 12px; color: var(--primary-text-color, #e1e1e1); cursor: pointer;
+      }
+      .pipup-tool-toggle input { accent-color: #2196F3; }
+      .pipup-shot-preview { width: 100%; margin-top: 4px; }
+      .pipup-shot-preview img {
+        max-width: 100%; border-radius: 8px;
+        border: 1px solid var(--divider-color, #444);
+      }
+      .pipup-shot-preview .pip-hint { font-style: italic; }
       .pipup-app-version {
         display: flex;
         align-items: center;
@@ -2071,6 +2286,27 @@ class PipupNotifyCard extends HTMLElement {
                   const inner = this._appVersionInnerHtml(entity.entity_id, showAppVersion, showUpdateButton);
                   return inner ? `<div class="pipup-app-version">${inner}</div>` : '';
                 })()}
+                ${(() => {
+                  // Per-TV device tools: auto-update switch, reload, screenshot (view/save).
+                  const autoUpdId = this._getAutoUpdateSwitchId(entity.entity_id);
+                  const reloadId = this._getReloadButtonId(entity.entity_id);
+                  const camId = this._getScreenCameraId(entity.entity_id);
+                  if (!autoUpdId && !reloadId && !camId) return '';
+                  const autoOn = autoUpdId && this._hass?.states?.[autoUpdId]?.state === 'on';
+                  const parts = [];
+                  if (autoUpdId) parts.push(`
+                    <label class="pipup-tool-toggle" title="Let the TV install new app releases automatically (quiet window)">
+                      <input type="checkbox" class="pipup-autoupdate-check" data-entity="${entity.entity_id}" ${autoOn ? 'checked' : ''}>
+                      <ha-icon icon="mdi:autorenew" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> Auto-update
+                    </label>`);
+                  if (reloadId) parts.push(`<button class="pipup-tool-btn pipup-reload-btn" data-entity="${entity.entity_id}" title="Reload the PiPup app on this TV"><ha-icon icon="mdi:reload" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> Reload</button>`);
+                  if (camId) {
+                    parts.push(`<button class="pipup-tool-btn pipup-shot-view-btn" data-entity="${entity.entity_id}" title="Show a live screenshot of this TV"><ha-icon icon="mdi:monitor-screenshot" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> Screenshot</button>`);
+                    parts.push(`<button class="pipup-tool-btn pipup-shot-save-btn" data-entity="${entity.entity_id}" title="Save a screenshot to /config/www/pipup/"><ha-icon icon="mdi:content-save" style="--mdc-icon-size:14px;vertical-align:middle;"></ha-icon> Save</button>`);
+                  }
+                  return `<div class="pipup-device-tools">${parts.join('')}</div>
+                    ${camId ? `<div class="pipup-shot-preview" data-entity="${entity.entity_id}" style="display:none;"></div>` : ''}`;
+                })()}
                 <label class="pipup-power-autoon" title="When you send a notification, turn this TV on first if it's currently off">
                   <input type="checkbox" class="pipup-autoon-check" data-entity="${entity.entity_id}" ${this._powerOnWhenSending?.[entity.entity_id] ? 'checked' : ''} ${powerEntity ? '' : 'disabled'}>
                   Turn On if Off
@@ -2265,6 +2501,44 @@ class PipupNotifyCard extends HTMLElement {
           <input type="checkbox" id="pipup-fullscreen" ${fullscreen ? 'checked' : ''}>
           <ha-icon icon="mdi:fullscreen" style="--mdc-icon-size:16px;vertical-align:middle;"></ha-icon> Full screen
         </label>
+        <label title="Raise an existing popup with the same id instead of re-queuing it">
+          <input type="checkbox" id="pipup-bring-to-front" ${bringToFront ? 'checked' : ''}>
+          <ha-icon icon="mdi:arrange-bring-to-front" style="--mdc-icon-size:16px;vertical-align:middle;"></ha-icon> Bring to front
+        </label>
+      </div>
+    `;
+
+    // Icon + Padding (notification-composing, ha-pipup).
+    if (showAdvancedSettings) html += `
+      <div class="pipup-row">
+        <span class="pipup-row-label">Icon</span>
+        <div class="pipup-row-value">
+          <input type="text" id="pipup-icon" value="${this._escapeHtml(this._icon || '')}" placeholder="mdi:bell (optional icon on the popup)">
+        </div>
+      </div>
+      <div class="pipup-row">
+        <span class="pipup-row-label">Padding</span>
+        <div class="pipup-row-value">
+          <div class="pipup-row-with-unit">
+            <input type="range" id="pipup-padding" min="0" max="256" step="1" value="${Number(this._padding) || 0}">
+            <span class="duration-value" id="pipup-padding-value">${Number(this._padding) || 0}px</span>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Sound name + volume (popup audio cue; separate from TTS).
+    if (showAdvancedSettings) html += `
+      <div class="pipup-row">
+        <span class="pipup-row-label">Sound</span>
+        <div class="pipup-row-value">
+          <input type="text" id="pipup-sound" value="${this._escapeHtml(this._sound || '')}" placeholder="default (blank = silent)">
+        </div>
+      </div>
+      <div class="pipup-transparency-row">
+        <label>Sound Volume</label>
+        <input type="range" id="pipup-sound-volume" min="0" max="1" step="0.05" value="${Number.isFinite(Number(this._soundVolume)) ? Number(this._soundVolume) : 1}">
+        <span class="transparency-value" id="pipup-sound-volume-value">${Math.round((Number.isFinite(Number(this._soundVolume)) ? Number(this._soundVolume) : 1) * 100)}%</span>
       </div>
     `;
 
@@ -2334,6 +2608,42 @@ class PipupNotifyCard extends HTMLElement {
       </div>
     `;
 
+    // Media playback tuning (ha-pipup >= 1.31.0 / 2.0.0) — applies to image/video/camera.
+    if (showAdvancedSettings) html += `
+      <div class="pipup-row">
+        <span class="pipup-row-label">Poster Fit</span>
+        <div class="pipup-row-value">
+          <select id="pipup-poster-mode">
+            ${POSTER_MODE_OPTIONS.map(opt => `
+              <option value="${opt.value}" ${posterMode === opt.value ? 'selected' : ''}>${opt.label}</option>
+            `).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="pipup-row">
+        <span class="pipup-row-label">Buffer</span>
+        <div class="pipup-row-value">
+          <div class="pipup-row-with-unit">
+            <input type="range" id="pipup-buffer-ms" min="0" max="10000" step="50" value="${Number(this._bufferMs) || 0}">
+            <span class="duration-value" id="pipup-buffer-ms-value">${(Number(this._bufferMs) || 0) === 0 ? 'Auto' : (Number(this._bufferMs) + 'ms')}</span>
+          </div>
+        </div>
+      </div>
+      <div class="pipup-toggle-row">
+        <label title="Force the software video decoder (helps on TVs whose hardware decoder fails, e.g. video over YouTube on MediaTek)">
+          <input type="checkbox" id="pipup-software-decoder" ${softwareDecoder ? 'checked' : ''}>
+          <ha-icon icon="mdi:cog-sync-outline" style="--mdc-icon-size:16px;vertical-align:middle;"></ha-icon> Software decoder
+        </label>
+        <label title="Mute the video's own audio">
+          <input type="checkbox" id="pipup-muted" ${muted ? 'checked' : ''}>
+          <ha-icon icon="mdi:volume-off" style="--mdc-icon-size:16px;vertical-align:middle;"></ha-icon> Mute media
+        </label>
+      </div>
+      <div style="font-size:11px;color:var(--secondary-text-color, #808080);padding:0 8px 4px;">
+        <ha-icon icon="mdi:lightbulb-on-outline" style="--mdc-icon-size:13px;vertical-align:middle;"></ha-icon> These apply to the media above. Buffer "Auto" and Poster "Default" leave the app's own setting.
+      </div>
+    `;
+
     if (showAdvancedSettings) html += `
         </div>
       </div>
@@ -2359,6 +2669,18 @@ class PipupNotifyCard extends HTMLElement {
     const urgencySelect = this.querySelector('#pipup-urgency');
     const stackSelect = this.querySelector('#pipup-stack');
     const fullscreenToggle = this.querySelector('#pipup-fullscreen');
+    const bringToFrontToggle = this.querySelector('#pipup-bring-to-front');
+    const posterModeSelect = this.querySelector('#pipup-poster-mode');
+    const bufferMsSlider = this.querySelector('#pipup-buffer-ms');
+    const bufferMsValue = this.querySelector('#pipup-buffer-ms-value');
+    const softwareDecoderToggle = this.querySelector('#pipup-software-decoder');
+    const mutedToggle = this.querySelector('#pipup-muted');
+    const iconInput = this.querySelector('#pipup-icon');
+    const soundInput = this.querySelector('#pipup-sound');
+    const soundVolumeSlider = this.querySelector('#pipup-sound-volume');
+    const soundVolumeValue = this.querySelector('#pipup-sound-volume-value');
+    const paddingSlider = this.querySelector('#pipup-padding');
+    const paddingValue = this.querySelector('#pipup-padding-value');
     const notifTitleInput = this.querySelector('#pipup-notif-title');
     const titleColorPicker = this.querySelector('#pipup-title-color');
     const mediaWidthSlider = this.querySelector('#pipup-media-width');
@@ -2427,6 +2749,15 @@ class PipupNotifyCard extends HTMLElement {
           this._position = this._config.default_position;
           this._stack = this._config.default_stack || 'none';
           this._fullscreen = this._config.default_fullscreen || false;
+          this._bufferMs = this._config.default_buffer_ms || 0;
+          this._posterMode = this._config.default_poster_mode || '';
+          this._softwareDecoder = this._config.default_software_decoder || false;
+          this._icon = this._config.default_icon || '';
+          this._sound = this._config.default_sound || '';
+          this._soundVolume = this._config.default_sound_volume ?? 1;
+          this._muted = this._config.default_muted || false;
+          this._bringToFront = this._config.default_bring_to_front || false;
+          this._padding = this._config.default_padding || 0;
           this._backgroundColor = this._config.default_background_color;
           this._transparency = this._config.default_transparency;
           this._tts = this._config.tts_enabled;
@@ -2462,6 +2793,43 @@ class PipupNotifyCard extends HTMLElement {
         if (btn.disabled) return;
         this._installAppUpdate(btn.dataset.entity);
       };
+    });
+
+    // Per-device Auto-update switch.
+    this.querySelectorAll('.pipup-autoupdate-check').forEach(cb => {
+      cb.onclick = (e) => e.stopPropagation();
+      cb.onchange = () => {
+        const id = this._getAutoUpdateSwitchId(cb.dataset.entity);
+        if (!id || !this._hass) return;
+        this._hass.callService('switch', cb.checked ? 'turn_on' : 'turn_off', { entity_id: id })
+          .catch(err => this.showError(`⚠️ Auto-update toggle failed: ${err.message || 'error'}`));
+      };
+    });
+
+    // Per-device Reload button.
+    this.querySelectorAll('.pipup-reload-btn').forEach(btn => {
+      btn.onclick = (e) => { e.stopPropagation(); this._reloadDevice(btn.dataset.entity); };
+    });
+
+    // Per-device screenshot: view (live inline) + save (camera.snapshot).
+    this.querySelectorAll('.pipup-shot-view-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const entityId = btn.dataset.entity;
+        const preview = this.querySelector(`.pipup-shot-preview[data-entity="${entityId}"]`);
+        if (!preview) return;
+        const url = this._getScreenImageUrl(entityId);
+        if (!url) {
+          preview.style.display = 'block';
+          preview.innerHTML = `<span class="pip-hint">Screen image unavailable — the TV must be on (Android 11+, screenshot option enabled).</span>`;
+          return;
+        }
+        preview.style.display = 'block';
+        preview.innerHTML = `<img src="${url}" alt="TV screen">`;
+      };
+    });
+    this.querySelectorAll('.pipup-shot-save-btn').forEach(btn => {
+      btn.onclick = (e) => { e.stopPropagation(); this._saveScreenshot(btn.dataset.entity); };
     });
 
     // Per-device "turn on when sending" toggle. Runtime state on the Live Card
@@ -2588,6 +2956,51 @@ class PipupNotifyCard extends HTMLElement {
       fullscreenToggle.onchange = () => { this._fullscreen = fullscreenToggle.checked; };
     }
 
+    if (bringToFrontToggle) {
+      bringToFrontToggle.onchange = () => { this._bringToFront = bringToFrontToggle.checked; };
+    }
+
+    if (posterModeSelect) {
+      posterModeSelect.onchange = () => { this._posterMode = posterModeSelect.value; };
+    }
+
+    if (bufferMsSlider && bufferMsValue) {
+      bufferMsSlider.oninput = () => {
+        this._bufferMs = parseInt(bufferMsSlider.value) || 0;
+        bufferMsValue.textContent = this._bufferMs === 0 ? 'Auto' : `${this._bufferMs}ms`;
+      };
+    }
+
+    if (softwareDecoderToggle) {
+      softwareDecoderToggle.onchange = () => { this._softwareDecoder = softwareDecoderToggle.checked; };
+    }
+
+    if (mutedToggle) {
+      mutedToggle.onchange = () => { this._muted = mutedToggle.checked; };
+    }
+
+    if (iconInput) {
+      iconInput.onchange = () => { this._icon = iconInput.value; };
+    }
+
+    if (soundInput) {
+      soundInput.onchange = () => { this._sound = soundInput.value; };
+    }
+
+    if (soundVolumeSlider && soundVolumeValue) {
+      soundVolumeSlider.oninput = () => {
+        this._soundVolume = parseFloat(soundVolumeSlider.value);
+        soundVolumeValue.textContent = `${Math.round(this._soundVolume * 100)}%`;
+      };
+    }
+
+    if (paddingSlider && paddingValue) {
+      paddingSlider.oninput = () => {
+        this._padding = parseInt(paddingSlider.value) || 0;
+        paddingValue.textContent = `${this._padding}px`;
+      };
+    }
+
     if (notifTitleInput) {
       notifTitleInput.onchange = () => { this._notificationTitle = notifTitleInput.value; };
     }
@@ -2668,6 +3081,15 @@ class PipupNotifyCard extends HTMLElement {
         if (urgencySelect) this._urgency = urgencySelect.value;
         if (stackSelect) this._stack = stackSelect.value;
         if (fullscreenToggle) this._fullscreen = fullscreenToggle.checked;
+        if (bringToFrontToggle) this._bringToFront = bringToFrontToggle.checked;
+        if (posterModeSelect) this._posterMode = posterModeSelect.value;
+        if (bufferMsSlider) this._bufferMs = parseInt(bufferMsSlider.value) || 0;
+        if (softwareDecoderToggle) this._softwareDecoder = softwareDecoderToggle.checked;
+        if (mutedToggle) this._muted = mutedToggle.checked;
+        if (iconInput) this._icon = iconInput.value;
+        if (soundInput) this._sound = soundInput.value;
+        if (soundVolumeSlider) this._soundVolume = parseFloat(soundVolumeSlider.value);
+        if (paddingSlider) this._padding = parseInt(paddingSlider.value) || 0;
         if (notifTitleInput) this._notificationTitle = notifTitleInput.value;
         if (titleColorPicker) this._titleColor = titleColorPicker.value;
         if (mediaWidthSlider) this._mediaWidth = parseInt(mediaWidthSlider.value) || 0;

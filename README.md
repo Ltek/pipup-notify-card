@@ -60,7 +60,7 @@ Then add the card to a dashboard: **Add Card → PiPup Notify Card (Ltek)** (or 
   - a checkbox to include it as a send target,
   - a **Power** chip (green On / yellow Off / grey Unknown),
   - a connectivity **Online/Offline** chip (red = offline/problem),
-  - an expander that reveals a per-device **Power** toggle, power automation options, and the **installed vs. available app version** with an optional **Update** button; the expanded row is outlined in the theme's accent color.
+  - an expander that reveals a per-device **Power** toggle, power automation options, the **installed vs. available app version** with an optional **Update** button, and **device tools** (Auto-update switch, Reload, Screenshot view/save); the expanded row is outlined in the theme's accent color.
 - **Advanced Settings** (collapsible) — Notification Title, Message, Display Time, Position, Urgency, background Color + Transparency, Title Color, Show progress / Speak aloud (TTS) / Dismissible, Action Buttons, Image/Video URL, Media Width.
 - **Profiles** dropdown to instantly load a saved preset.
 - **Jinja templates** supported in the Message field for live sensor data.
@@ -69,6 +69,12 @@ Then add the card to a dashboard: **Add Card → PiPup Notify Card (Ltek)** (or 
 - Each expanded Target-TV row shows the **installed** PiPup app version and, when the fork has a newer release, the **available** version with an `update` badge (resolved from the integration's `update.pipup_*_app` entity, app ≥ 0.6.0).
 - Optional per-TV **Update** button pushes the available app update to that TV (calls `update.install`). It's enabled only when an update is available and not already in progress.
 - Both the version display and the Update button can be shown/hidden independently (Visual Editor → Card Settings → Section Display Options).
+
+### Per-TV device tools (expanded row)
+- **Auto-update** switch — toggle the integration's automatic app updates (ha-pipup ≥ 1.31.0).
+- **Reload** — press the per-TV Reload button (ha-pipup ≥ 1.31.0).
+- **Screenshot** — **view** shows a live frame of the TV inline (fetched on demand; nothing is stored), **save** writes a JPEG to `/config/www/pipup/` (served at `/local/pipup/…`) via `camera.snapshot`. Requires the integration's "A picture of the screen" option (ha-pipup ≥ 2.0.0) and Android 11+ with the screen on; for *save*, `/config/www` must be in `allowlist_external_dirs`.
+- Each tool appears only when its matching integration entity exists.
 
 ### Per-TV power control
 - Turn each TV **on/off** individually from the card.
@@ -83,9 +89,10 @@ Then add the card to a dashboard: **Add Card → PiPup Notify Card (Ltek)** (or 
 - **Urgency** presets (Info / Warning / Critical) for colored borders.
 - Background color + **transparency** (0% solid → 100% invisible).
 - **Border** width + color and **corner radius** (app ≥ 0.7.0; border width 0 = no border).
-- Title color, show-progress bar, **TTS** ("speak aloud"), dismissible.
+- Title color, show-progress bar, **TTS** ("speak aloud"), dismissible, **bring to front**.
+- **Icon** on the popup, **sound** cue + volume, inner **padding**.
 - Up to **3 action buttons** — each fires a `pipup_button` event for automations.
-- **Image / Video / media** URL with adjustable media width.
+- **Image / Video / media** URL with adjustable media width, plus **Poster Fit**, media **Buffer**, **Software decoder**, and **Mute media** for video/camera streams (ha-pipup ≥ 1.31.0 / 2.0.0).
 
 ### Profiles
 - Save the full set of notification + target settings as a named **profile**.

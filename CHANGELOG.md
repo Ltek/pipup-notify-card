@@ -1,5 +1,11 @@
 # Changelog
 
+## v2026.11.27.63
+
+- **New notification options** tracking recent PiPup/ha-pipup builds: **Poster Fit** (`poster_mode`), media **Buffer** (`buffer_ms`), **Software decoder** and **Mute media** for video, plus **Icon**, **Sound** + volume, **Padding**, and **Bring to front**. Each is sent only when set, so the app keeps its own defaults otherwise.
+- **Per-TV device tools** in the expanded row: **Auto-update** switch, **Reload** button, and **Screenshot** — *view* shows a live frame inline, *save* writes a JPEG to `/config/www/pipup/` (served at `/local/pipup/…`) via `camera.snapshot`. These appear only when the matching integration entities exist (ha-pipup ≥ 1.31.0 for reload/auto-update, ≥ 2.0.0 with the screenshot option for the Screen camera).
+- Media/TV control (now-playing, app launch, key/click) intentionally **not** added — out of scope for a notification card.
+
 ## v2026.11.26.62
 
 - **Theme card style.** Card Style → **Theme card (your HA theme)** gives the card your theme's
